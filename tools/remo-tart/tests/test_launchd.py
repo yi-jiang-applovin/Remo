@@ -44,3 +44,82 @@ def test_job_present_false_when_launchctl_fails(tmp_path: Path) -> None:
     with patch("subprocess.run") as run:
         run.return_value.returncode = 1
         assert job_present("com.remo.tart.remo-dev") is False
+
+
+_LAUNCHCTL_PRINT_TEMPLATE = """\
+gui/501/com.remo.tart.remo-dev = {{
+\tactive count = 3
+\tstate = running
+
+\tprogram = /bin/zsh
+\targuments = {{
+\t\t/bin/zsh
+\t\t-lc
+\t\t{cmd}
+\t}}
+\tpid = 75144
+}}
+"""
+
+
+def _print_stub(returncode: int, stdout: str = "") -> object:
+    """Return a CompletedProcess-shaped MagicMock for subprocess.run."""
+    from unittest.mock import MagicMock
+
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.stdout = stdout
+    return proc
+
+
+def test_running_tart_argv_parses_dir_bindings() -> None:
+    from remo_tart.launchd import running_tart_argv
+
+    cmd = (
+        "exec tart run pulse-ios-dev-vm --net-bridged en0 "
+        "--dir pulse-ios-dev-vm:/Users/jane/Pulse "
+        "> /Users/jane/.config/remo/tart/pulse-ios-dev-vm.log 2>&1"
+    )
+    output = _LAUNCHCTL_PRINT_TEMPLATE.format(cmd=cmd)
+    with patch("subprocess.run", return_value=_print_stub(0, output)):
+        argv = running_tart_argv("com.remo.tart.pulse-ios-dev-vm")
+    assert argv is not None
+    assert argv[:3] == ["tart", "run", "pulse-ios-dev-vm"]
+    assert "--dir" in argv
+    assert "pulse-ios-dev-vm:/Users/jane/Pulse" in argv
+    assert ">" not in argv
+    assert "2>&1" not in argv
+
+
+def test_running_tart_argv_returns_none_when_job_absent() -> None:
+    from remo_tart.launchd import running_tart_argv
+
+    with patch("subprocess.run", return_value=_print_stub(1, "")):
+        assert running_tart_argv("com.remo.tart.nope") is None
+
+
+def test_running_tart_argv_returns_none_when_no_exec_line() -> None:
+    """`launchctl print` succeeded but did not contain an `exec tart` line —
+    e.g. a job submitted by something other than this module. We treat that
+    as "unknown" rather than crashing or matching partial junk."""
+    from remo_tart.launchd import running_tart_argv
+
+    with patch("subprocess.run", return_value=_print_stub(0, "no exec line here")):
+        assert running_tart_argv("com.remo.tart.foo") is None
+
+
+def test_running_tart_argv_handles_quoted_paths() -> None:
+    """Paths containing spaces are shell-quoted in the launchctl print output;
+    shlex must round-trip them as single tokens."""
+    from remo_tart.launchd import running_tart_argv
+
+    cmd = (
+        "exec tart run space-vm "
+        "--dir space-vm:'/Users/jane/With Space/Repo' "
+        "> '/log path/x.log' 2>&1"
+    )
+    output = _LAUNCHCTL_PRINT_TEMPLATE.format(cmd=cmd)
+    with patch("subprocess.run", return_value=_print_stub(0, output)):
+        argv = running_tart_argv("com.remo.tart.space-vm")
+    assert argv is not None
+    assert "space-vm:/Users/jane/With Space/Repo" in argv

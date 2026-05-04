@@ -60,6 +60,44 @@ def job_present(label_str: str) -> bool:
     return result.returncode == 0
 
 
+def running_tart_argv(label_str: str) -> list[str] | None:
+    """Return the argv of the ``tart`` invocation managed by *label_str*.
+
+    Parses the ``arguments = { ... }`` block from ``launchctl print``. The
+    block always contains an ``exec tart …`` shell command line because we
+    submit jobs via ``/bin/zsh -lc 'exec tart … > log 2>&1'`` (see
+    :func:`build_submit_argv`). Returns ``None`` if the job is not active or
+    the command line cannot be located.
+
+    The returned list starts with ``"tart"`` (e.g. ``["tart", "run",
+    "<vm>", "--dir", "<name>:<path>", ...]``); trailing shell redirection
+    tokens (``> /log 2>&1``) are stripped.
+    """
+    target = f"gui/{_gui_uid()}/{label_str}"
+    result = subprocess.run(
+        ["launchctl", "print", target],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        if not line.startswith("exec tart "):
+            continue
+        try:
+            tokens = shlex.split(line[len("exec ") :])
+        except ValueError:
+            return None
+        # Strip trailing shell redirections (`> /path/log 2>&1`).
+        for sentinel in ("2>&1", ">"):
+            if sentinel in tokens:
+                tokens = tokens[: tokens.index(sentinel)]
+        return tokens
+    return None
+
+
 def cleanup_stale(label_str: str, vm_running: bool) -> bool:
     """If a launchd job is registered but the VM isn't actually running, remove it.
 
