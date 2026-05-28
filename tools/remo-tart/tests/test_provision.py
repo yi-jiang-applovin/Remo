@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from remo_tart.config import ProjectConfig, ScriptsConfig, VmConfig
-from remo_tart.mount import MountEntry
+from remo_tart.errors import RemoTartError
 from remo_tart.provision import build_guest_script, run_provision
 
 
@@ -26,126 +28,12 @@ def _cfg(packs: list[str] | None = None) -> ProjectConfig:
     )
 
 
-def _mounts() -> list[MountEntry]:
-    return [
-        MountEntry("remo-feat", Path("/r")),
-        MountEntry("remo-git-root", Path("/r/.git")),
-    ]
-
-
-def test_script_has_shebang_and_strict_mode() -> None:
-    script = build_guest_script(_cfg(), _mounts(), packs_dir_guest="/P", verify=True)
-    assert script.startswith("#!/usr/bin/env bash")
-    assert "set -euo pipefail" in script
-
-
-def test_script_sources_each_enabled_pack() -> None:
-    script = build_guest_script(
-        _cfg(["ios", "rust", "node"]), _mounts(), packs_dir_guest="/P", verify=True
-    )
-    assert 'source "/P/ios.sh"' in script or "source '/P/ios.sh'" in script
-    assert 'source "/P/rust.sh"' in script or "source '/P/rust.sh'" in script
-    assert 'source "/P/node.sh"' in script or "source '/P/node.sh'" in script
-
-
-def test_script_sources_lib_before_any_pack() -> None:
-    script = build_guest_script(
-        _cfg(["ios", "rust"]), _mounts(), packs_dir_guest="/P", verify=False
-    )
-    lib_idx = script.index("_lib.sh")
-    ios_idx = script.index("ios.sh")
-    rust_idx = script.index("rust.sh")
-    assert lib_idx < ios_idx
-    assert lib_idx < rust_idx
-
-
-def test_script_calls_ensure_function_for_each_pack() -> None:
-    script = build_guest_script(_cfg(["ios", "rust"]), _mounts(), packs_dir_guest="/P", verify=True)
-    assert "tart_pack_ios_ensure" in script
-    assert "tart_pack_rust_ensure" in script
-
-
-def test_script_passes_worktree_root_to_each_ensure() -> None:
-    """Regression: shell pack reads $1 under set -u; missing arg aborts provision."""
-    script = build_guest_script(
-        _cfg(["shell", "ios", "rust"]), _mounts(), packs_dir_guest="/P", verify=False
-    )
-    primary_guest_path = "/Volumes/My Shared Files/remo-feat"
-    assert f"tart_pack_shell_ensure '{primary_guest_path}'" in script
-    assert f"tart_pack_ios_ensure '{primary_guest_path}'" in script
-    assert f"tart_pack_rust_ensure '{primary_guest_path}'" in script
-
-
-def test_script_uses_primary_mount_for_project_scripts() -> None:
-    script = build_guest_script(_cfg(), _mounts(), packs_dir_guest="/P", verify=True)
-    # primary mount is remo-feat (first non-git-root)
-    assert "/Volumes/My Shared Files/remo-feat/.tart/provision.sh" in script
-
-
-def test_script_includes_verify_when_verify_true() -> None:
-    script = build_guest_script(_cfg(), _mounts(), packs_dir_guest="/P", verify=True)
-    assert "/Volumes/My Shared Files/remo-feat/.tart/verify-worktree.sh" in script
-
-
-def test_script_omits_verify_when_verify_false() -> None:
-    script = build_guest_script(_cfg(), _mounts(), packs_dir_guest="/P", verify=False)
-    assert "verify-worktree.sh" not in script
-
-
-def test_script_skips_git_root_bridge_for_primary_mount_selection() -> None:
-    """If mounts only contain git-root bridge, no primary exists — this should fail loudly."""
-    import pytest
-
-    from remo_tart.errors import RemoTartError
-
-    with pytest.raises(RemoTartError):
-        build_guest_script(
-            _cfg(),
-            [MountEntry("remo-git-root", Path("/r/.git"))],
-            packs_dir_guest="/P",
-            verify=True,
-        )
-
-
-def test_script_with_empty_packs_list() -> None:
-    script = build_guest_script(_cfg(packs=[]), _mounts(), packs_dir_guest="/P", verify=False)
-    # Helper library is always sourced; no per-pack source lines beyond _lib.sh.
-    assert script.count("source ") == 1
-    assert "_lib.sh" in script
-    assert "provision.sh" in script
-
-
-@patch("remo_tart.provision.vm.exec_interactive")
-def test_run_provision_invokes_vm_exec_interactive(exec_i: MagicMock) -> None:
-    exec_i.return_value = 0
-    result = run_provision("remo-dev", _cfg(), _mounts(), verify=True)
-    assert result == 0
-    exec_i.assert_called_once()
-    (called_vm, called_argv) = exec_i.call_args[0]
-    assert called_vm == "remo-dev"
-    assert called_argv[0:2] == ["bash", "-c"]
-    # The third element is the generated script
-    assert "#!/usr/bin/env bash" in called_argv[2]
-
-
-@patch("remo_tart.provision.vm.exec_interactive")
-def test_run_provision_propagates_nonzero(exec_i: MagicMock) -> None:
-    exec_i.return_value = 7
-    assert run_provision("remo-dev", _cfg(), _mounts(), verify=False) == 7
-
-
-# ---------------------------------------------------------------------------
-# config_hash (rebuild detection — issue #68 phase 1)
-# ---------------------------------------------------------------------------
-
-
 def _seed_repo(root: Path, *, pack_files: dict[str, str], provision_body: str) -> Path:
     """Seed a fake repo at *root* with .tart/packs/ and provision.sh.
 
     Returns *root* for chaining. Each entry of *pack_files* maps pack
-    basename (without .sh) to its content; `_lib.sh` is the only one
-    treated specially (the helper sources it). Pass an empty
-    *pack_files* to test missing-file handling.
+    basename (without .sh) to its content; `_lib` becomes `_lib.sh`.
+    Pass an empty *pack_files* to test missing-file handling.
     """
     packs = root / ".tart" / "packs"
     packs.mkdir(parents=True, exist_ok=True)
@@ -153,6 +41,123 @@ def _seed_repo(root: Path, *, pack_files: dict[str, str], provision_body: str) -
         (packs / f"{name}.sh").write_text(body)
     (root / ".tart" / "provision.sh").write_text(provision_body)
     return root
+
+
+def test_script_has_shebang_and_strict_mode(tmp_path: Path) -> None:
+    _seed_repo(
+        tmp_path,
+        pack_files={"_lib": "lib", "ios": "ios", "rust": "rust"},
+        provision_body=":",
+    )
+    script = build_guest_script(_cfg(), tmp_path)
+    assert script.startswith("#!/usr/bin/env bash")
+    assert "set -euo pipefail" in script
+
+
+def test_build_guest_script_embeds_pack_sources_and_creates_developer(tmp_path: Path) -> None:
+    _seed_repo(
+        tmp_path,
+        pack_files={"_lib": "lib body", "ios": "ios body"},
+        provision_body="echo provision",
+    )
+    script = build_guest_script(_cfg(["ios"]), tmp_path)
+
+    assert 'mkdir -p "$HOME/Developer"' in script
+    assert "lib body" in script
+    assert "ios body" in script
+    assert "echo provision" in script
+    assert "/Volumes/My Shared Files" not in script
+
+
+def test_script_sources_lib_before_any_pack(tmp_path: Path) -> None:
+    _seed_repo(
+        tmp_path,
+        pack_files={"_lib": "lib", "ios": "ios", "rust": "rust"},
+        provision_body=":",
+    )
+    script = build_guest_script(_cfg(["ios", "rust"]), tmp_path)
+    lib_idx = script.index("_lib.sh")
+    ios_idx = script.index("ios.sh")
+    rust_idx = script.index("rust.sh")
+    assert lib_idx < ios_idx
+    assert lib_idx < rust_idx
+
+
+def test_script_calls_ensure_function_for_each_pack(tmp_path: Path) -> None:
+    _seed_repo(
+        tmp_path,
+        pack_files={"_lib": "lib", "ios": "ios", "rust": "rust"},
+        provision_body=":",
+    )
+    script = build_guest_script(_cfg(["ios", "rust"]), tmp_path)
+    assert "tart_pack_ios_ensure" in script
+    assert "tart_pack_rust_ensure" in script
+
+
+def test_script_passes_developer_dir_to_each_ensure(tmp_path: Path) -> None:
+    _seed_repo(
+        tmp_path,
+        pack_files={"_lib": "lib", "shell": "shell", "ios": "ios", "rust": "rust"},
+        provision_body=":",
+    )
+    script = build_guest_script(_cfg(["shell", "ios", "rust"]), tmp_path)
+    assert 'tart_pack_shell_ensure "$HOME/Developer"' in script
+    assert 'tart_pack_ios_ensure "$HOME/Developer"' in script
+    assert 'tart_pack_rust_ensure "$HOME/Developer"' in script
+
+
+def test_script_runs_embedded_project_provision_hook(tmp_path: Path) -> None:
+    _seed_repo(tmp_path, pack_files={"_lib": "lib", "ios": "ios"}, provision_body="provision")
+    script = build_guest_script(_cfg(["ios"]), tmp_path)
+    assert 'bash "$tmpdir/provision.sh"' in script
+    assert "provision" in script
+
+
+def test_build_guest_script_fails_when_enabled_pack_file_missing(tmp_path: Path) -> None:
+    _seed_repo(tmp_path, pack_files={"_lib": "lib"}, provision_body="echo provision")
+
+    with pytest.raises(RemoTartError) as excinfo:
+        build_guest_script(_cfg(["ios"]), tmp_path)
+
+    assert "pack file is missing" in str(excinfo.value)
+
+
+def test_script_with_empty_packs_list(tmp_path: Path) -> None:
+    _seed_repo(tmp_path, pack_files={"_lib": "lib"}, provision_body=":")
+    script = build_guest_script(_cfg(packs=[]), tmp_path)
+    assert 'source "$tmpdir/_lib.sh"' in script
+    assert "tart_pack_" not in script
+    assert "provision.sh" in script
+
+
+@patch("remo_tart.provision.vm.exec_script")
+def test_run_provision_streams_script(exec_script: MagicMock, tmp_path: Path) -> None:
+    _seed_repo(
+        tmp_path,
+        pack_files={"_lib": "lib", "ios": "tart_pack_ios_ensure() { :; }"},
+        provision_body=":",
+    )
+    exec_script.return_value = 0
+
+    assert run_provision("remo-dev", _cfg(["ios"]), tmp_path) == 0
+    assert exec_script.call_args.args[0] == "remo-dev"
+    assert 'mkdir -p "$HOME/Developer"' in exec_script.call_args.args[1]
+
+
+@patch("remo_tart.provision.vm.exec_script")
+def test_run_provision_propagates_nonzero(exec_script: MagicMock, tmp_path: Path) -> None:
+    _seed_repo(
+        tmp_path,
+        pack_files={"_lib": "lib", "ios": "tart_pack_ios_ensure() { :; }"},
+        provision_body=":",
+    )
+    exec_script.return_value = 7
+    assert run_provision("remo-dev", _cfg(["ios"]), tmp_path, verify=False) == 7
+
+
+# ---------------------------------------------------------------------------
+# config_hash (rebuild detection — issue #68 phase 1)
+# ---------------------------------------------------------------------------
 
 
 def test_config_hash_is_deterministic(tmp_path: Path) -> None:
