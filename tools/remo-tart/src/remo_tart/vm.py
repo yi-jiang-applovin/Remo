@@ -179,8 +179,12 @@ def exec_interactive(name: str, argv: list[str]) -> int:
 
 
 def exec_script(name: str, script: str) -> int:
+    """Run *script* inside *name* via ``bash -s`` with streamed output.
+
+    ``tart exec -i`` is required for forwarding host stdin to the guest.
+    """
     result = subprocess.run(
-        ["tart", "exec", name, "bash", "-s"],
+        ["tart", "exec", "-i", name, "bash", "-s"],
         input=script,
         text=True,
         check=False,
