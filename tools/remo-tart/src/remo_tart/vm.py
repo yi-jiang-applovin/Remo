@@ -178,6 +178,16 @@ def exec_interactive(name: str, argv: list[str]) -> int:
     return result.returncode
 
 
+def exec_script(name: str, script: str) -> int:
+    result = subprocess.run(
+        ["tart", "exec", name, "bash", "-s"],
+        input=script,
+        text=True,
+        check=False,
+    )
+    return result.returncode
+
+
 # ---------------------------------------------------------------------------
 # Pure build helper (no subprocess — safe to call from launchd submitter)
 # ---------------------------------------------------------------------------
