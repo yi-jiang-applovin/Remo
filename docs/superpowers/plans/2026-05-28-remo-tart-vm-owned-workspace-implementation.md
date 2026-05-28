@@ -32,7 +32,7 @@ Modify these files:
   - Build guest script without mount paths.
   - Stream script into VM instead of `bash -c <script>`.
 - `tools/remo-tart/src/remo_tart/vm.py`
-  - Add `exec_script(vm_name, script)` helper that invokes `tart exec <vm> bash -s` with stdin.
+  - Add `exec_script(vm_name, script)` helper that invokes `tart exec -i <vm> bash -s` with stdin.
 - `tools/remo-tart/src/remo_tart/worktree.py`
   - Convert default lifecycle from "attach worktree" to "ensure VM ready".
   - Keep or rename carefully to reduce churn, but remove host worktree mount semantics from public behavior.
@@ -186,7 +186,7 @@ def test_exec_script_streams_script_to_bash_stdin(run: MagicMock) -> None:
     assert vm.exec_script("remo-dev", "echo hi\n") == 0
 
     run.assert_called_once()
-    assert run.call_args.args[0] == ["tart", "exec", "remo-dev", "bash", "-s"]
+    assert run.call_args.args[0] == ["tart", "exec", "-i", "remo-dev", "bash", "-s"]
     assert run.call_args.kwargs["input"] == "echo hi\n"
     assert run.call_args.kwargs["text"] is True
     assert run.call_args.kwargs["check"] is False
@@ -210,13 +210,16 @@ In `vm.py`, add:
 ```python
 def exec_script(name: str, script: str) -> int:
     result = subprocess.run(
-        ["tart", "exec", name, "bash", "-s"],
+        ["tart", "exec", "-i", name, "bash", "-s"],
         input=script,
         text=True,
         check=False,
     )
     return result.returncode
 ```
+
+Add a short docstring noting that Tart requires `-i` to forward host stdin to
+the guest command.
 
 - [ ] **Step 4: Run focused test**
 
