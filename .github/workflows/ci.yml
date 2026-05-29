@@ -29,22 +29,6 @@ jobs:
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo test --workspace
 
-  python:
-    name: Python Lint & Test (remo-tart)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tools/remo-tart
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v3
-        with:
-          version: "0.11.7"
-      - run: uv sync --group dev
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pytest -v
-
   e2e:
     name: E2E (Simulator)
     needs: check

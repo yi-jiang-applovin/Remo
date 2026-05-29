@@ -71,7 +71,6 @@ into downstream application repos.
 
 | Skill | Purpose | When to use |
 |-------|---------|-------------|
-| [`tart-dev-management`](tart-dev-management/SKILL.md) | Manage the shared `remo-dev` contributor VM and attach worktrees | After cloning Remo, when opening a new worktree, when connecting through CLI or Remote SSH editors, or when cleaning worktree-local Tart caches |
 | [`example-ios-feature-dev`](example-ios-feature-dev/SKILL.md) | Agentic dev loop for `examples/ios/` — register capabilities, drive & validate with `remo` + XcodeBuildMCP | When building or changing a feature inside `examples/ios/RemoExamplePackage/` |
 
 ## CLI Reference

@@ -32,24 +32,6 @@ SKIP_BUILD=1 ./scripts/e2e-test.sh        # skip build phase
 ./scripts/e2e-test.sh --screenshots       # save screenshots to /tmp/remo-e2e/
 ```
 
-## Tart VM Workflow
-
-If the task is being executed inside the repository Tart development VM flow, start with:
-
-- [docs/tart-development-guide.md](/Users/yi.jiang/Developer/Remo/.worktrees/tart-vm/docs/tart-development-guide.md)
-
-That guide is the shared human/agent reference for:
-
-- how to bootstrap the project VM after clone
-- how to attach a new worktree to the shared `remo-dev` VM
-- how to connect through CLI, Cursor, or VS Code
-- how to clean worktree-local Tart caches without resetting the whole VM
-- where Tart stores VM disks, OCI caches, and Remo-specific host state
-- which configuration belongs to the host, VM, or worktree
-- how `.tart/project.sh` and `.tart/packs/` define the project-specific layer on top of the shared Tart tooling
-- how to run `status` / `doctor` before debugging a Tart workflow problem
-- which host-specific caveats apply right now, including `bridged:en0`
-
 ## Architecture
 
 ### Crate topology (dependency order)
@@ -122,7 +104,6 @@ remo-setup → remo-capabilities → remo (daily) ↔ remo-design-review (period
 
 | Skill | When to use |
 |-------|-------------|
-| `tart-dev-management` | After cloning Remo, when attaching a new worktree to `remo-dev`, when connecting through CLI or Remote SSH editors, or when cleaning worktree-local Tart caches |
 | `example-ios-feature-dev` | When building or changing a feature inside `examples/ios/RemoExamplePackage/` — register Remo capabilities, drive the app with `remo` CLI + XcodeBuildMCP, capture and report |
 
 When editing skill files, verify that CLI commands, SDK API references, and example code match the current implementation. Keep each skill's `references/cli.md` aligned with the others, and keep `docs/cli.md`, `README.md`, and the skill folders aligned with those distributed references.

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Tart Dev Management"
-  short_description: "Bootstrap and use Remo's shared contributor VM"
-  default_prompt: "Use $tart-dev-management to set up or reuse the shared remo-dev Tart VM, attach this worktree, and connect through CLI, Cursor, or VS Code."

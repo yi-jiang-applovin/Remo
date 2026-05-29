@@ -45,23 +45,3 @@ Once real users exist, add a section showing real agent workflows or integration
 ### 8. Animated architecture diagram
 Replace ASCII art with a cleaner SVG or Mermaid diagram.
 
-## Infrastructure / Tooling
-
-### 9. Extract `remo-tart` CLI to its own repository
-
-Context: the `remo-tart` CLI (see `docs/specs/2026-04-24-remo-tart-cli-design.md`) is ~90% generic Tart project-VM tooling. Lives under `tools/remo-tart/` inside Remo for now so iteration stays cheap while the CLI stabilizes — schema changes happen in one PR instead of two.
-
-Trigger to act (any of):
-- A second consumer project wants to use `remo-tart`.
-- The CLI has been stable for 2+ releases with no schema churn.
-- A contributor outside the Remo team asks to collaborate on the CLI itself.
-
-Plan when triggered:
-1. `git subtree split --prefix=tools/remo-tart -b remo-tart-extract` (preserves history).
-2. Push to a new repo (tentative: `yjmeqt/remo-tart`).
-3. Add standalone README, LICENSE, CHANGELOG, and CI (lint + tests on `ubuntu-latest`).
-4. Tag first release, e.g. `v0.1.0`.
-5. In Remo: delete `tools/remo-tart/`; update docs to install via `uv tool install git+https://github.com/yjmeqt/remo-tart@v0.1.0` (or `--editable` against a local clone for dev).
-6. Coordinate schema changes across both repos going forward.
-
-Why parked: only one consumer today; extracting now is premature generalization. `git subtree split` preserves history, so the cost of extraction later is minutes, not days.

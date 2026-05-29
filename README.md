@@ -282,56 +282,10 @@ Everything below is for contributing to Remo itself.
 |------|---------|-------|
 | Rust | 1.82+ | Auto-installed via `rust-toolchain.toml` |
 | Xcode | 16+ | iOS SDK + Swift 6.1 |
-| Tart | latest | Recommended contributor workflow |
 
-### Recommended: Tart-first contributor workflow
+### Build from source
 
-```bash
-git clone https://github.com/yjmeqt/Remo.git && cd Remo
-make setup   # Configure git hooks
-brew install cirruslabs/cli/tart astral-sh/uv/uv
-uv tool install --editable tools/remo-tart
-remo-tart up
-```
-
-After that:
-
-```bash
-# New worktree
-git worktree add .worktrees/my-branch -b my-branch
-cd .worktrees/my-branch
-remo-tart up           # attach + boot + connect (cli)
-
-# Or open in editor directly
-remo-tart up cursor
-remo-tart up vscode
-
-# Remove a worktree's mount when done
-remo-tart clean-worktree
-
-# Health check
-remo-tart status
-remo-tart doctor
-```
-
-Use Tart for Remo development by default, but it is not a hard requirement.
-
-For the detailed contributor guide, including first clone setup, worktree
-attachment, CLI/Cursor/VS Code connection paths, cache cleanup, VM storage
-layout, and `status` / `doctor` troubleshooting, see
-[`docs/tart-development-guide.md`](docs/tart-development-guide.md).
-
-For lower-level script behavior and Tart troubleshooting details, see
-[`docs/tart-dev-vm.md`](docs/tart-dev-vm.md).
-
-Agents contributing to Remo itself can use
-[`skills/tart-dev-management/SKILL.md`](skills/tart-dev-management/SKILL.md)
-to follow the same contributor workflow.
-
-### Build from source without Tart
-
-If you do not want to use Tart, the repository still supports direct local
-development:
+To build locally:
 
 ```bash
 cargo build -p remo-cli              # Build the CLI

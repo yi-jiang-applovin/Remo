@@ -6,8 +6,8 @@ description: Use when building or changing a feature inside examples/ios/RemoExa
 # Example iOS Feature Dev
 
 Use this skill when working on the bundled example app at `examples/ios/` as a
-Remo repo contributor. It is the companion to `tart-dev-management` and
-assumes the SDK itself already builds — its job is the UI feature loop on top.
+Remo repo contributor. It assumes the SDK itself already builds — its job is 
+the UI feature loop on top.
 
 This skill is **repo-internal**. Downstream projects consuming the Remo SDK
 should use `remo-setup` / `remo-capabilities` / `remo` instead.
@@ -81,15 +81,7 @@ If a capability would be valuable but is not yet safe to implement, leave a
 
 Build the SDK XCFramework first, then the example app via XcodeBuildMCP.
 
-**Shared-folder caveat (Tart / `/Volumes/My Shared Files/...`):** the default
-cargo target dir cannot mmap object files on the shared mount. Redirect the
-target dir out to local storage:
-
-```bash
-CARGO_TARGET_DIR=/tmp/remo-cargo-target make ios-sim
-```
-
-Then use XcodeBuildMCP (not raw `xcodebuild`) to build and launch the example
+Use XcodeBuildMCP (not raw `xcodebuild`) to build and launch the example
 app. The xcworkspace is `examples/ios/RemoExample.xcworkspace`, scheme
 `RemoExample`. Boot a simulator, install, and launch before moving on.
 
