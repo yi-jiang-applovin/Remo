@@ -12,6 +12,7 @@ members = [
     "crates/remo-bonjour",
     "crates/remo-daemon",
     "crates/remo-cdp",
+    "crates/remo-mcp",
 ]
 
 [workspace.lints.clippy]
@@ -87,9 +88,11 @@ tower = { version = "0.5", features = ["util"] }
 http = "1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-# CDP test client only (dev-dependency): a raw WebSocket client for
-# proving the real dual-stack `RemoServer` against actual CDP framing,
-# independent of remo-cdp's own server-side codec.
+# A raw WebSocket client: used as a dev-dependency at the workspace root to
+# prove the real dual-stack `RemoServer` against actual CDP framing
+# (independent of remo-cdp's own server-side codec), and as a real
+# (non-dev) dependency of `remo-mcp`, which dials `Remo`-speaking CDP
+# servers as an actual client.
 tokio-tungstenite = "0.28"
 
 # Open URLs in browser
@@ -102,6 +105,12 @@ async-trait = "0.1"
 # standard domains (Page/DOM/CSS/Overlay) remo-cdp reuses.
 chromiumoxide_cdp = "0.9"
 chromiumoxide_types = "0.9"
+
+# MCP: the official Rust SDK, used by `remo-mcp` (the agent-facing companion
+# server) to expose `Remo.*` CDP calls as MCP tools. `schemars` derives the
+# tools' JSON input schemas.
+rmcp = "3"
+schemars = "1"
 
 [package]
 name = "remo-workspace"
