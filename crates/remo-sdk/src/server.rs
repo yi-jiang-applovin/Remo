@@ -1,10 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use remo_protocol::{ErrorCode, Event, Message, Request, Response};
-use remo_transport::{Connection, Listener};
-use tokio::sync::{broadcast, oneshot, Mutex};
-use tracing::{error, info, warn};
+use remo_transport::Listener;
+use tokio::sync::{broadcast, oneshot};
+use tracing::{error, info};
 
 use crate::registry::CapabilityRegistry;
 
@@ -76,6 +75,15 @@ impl RemoServer {
     ///
     /// If `port_tx` is provided, sends the actual bound port once listening.
     /// This is essential when `port` is 0 (OS-assigned dynamic port).
+    ///
+    /// Every accepted connection is served as CDP (HTTP discovery + WS
+    /// upgrade) — this dropped the dual-stack peek that used to route a
+    /// connection to the old length-prefixed codec instead. That codec, the
+    /// clients that spoke it (`remo-desktop`, `remo-daemon`), and the
+    /// `capabilities_changed`-over-legacy-wire event forwarding this method
+    /// used to wire up are gone (Phase 3 cutover of the rewrite plan) — see
+    /// the plan's "Phase 3 — cut over" for why this is safe to do as a flag
+    /// day now, unlike Phase 1's dual-stack requirement.
     pub async fn run(
         &self,
         port_tx: Option<oneshot::Sender<u16>>,
@@ -92,13 +100,6 @@ impl RemoServer {
         let actual_port = listener.local_addr().port();
         info!(port = actual_port, "remo server started");
 
-        // Create the event broadcast channel and wire it into the registry
-        // so register/unregister emit capabilities_changed events.
-        /// Max queued events per subscriber before lagging.
-        const EVENT_CHANNEL_CAPACITY: usize = 64;
-        let (event_tx, _) = broadcast::channel::<Event>(EVENT_CHANNEL_CAPACITY);
-        self.registry.set_event_sender(event_tx.clone());
-
         if let Some(tx) = port_tx {
             let _ = tx.send(actual_port);
         }
@@ -107,55 +108,18 @@ impl RemoServer {
             let mut shutdown_rx = self.shutdown_tx.subscribe();
 
             tokio::select! {
-                // Dual-stack, not a flag day: peek the first bytes of every
-                // accepted connection *before* committing it to either
-                // protocol. Old framing starts with a 4-byte length prefix;
-                // new (CDP) framing starts with an HTTP request line — see
-                // `remo_cdp::dual_stack` for exactly how that's told apart
-                // and why the two can never collide in practice. Existing
-                // clients (today's `remo-cli`, `scripts/e2e-test.sh`) never
-                // see a behavior change; only newly-arriving CDP clients
-                // (Chrome, a rewritten CLI, an agent script) take the new
-                // path.
                 result = listener.accept_raw() => {
                     match result {
                         Ok((stream, peer)) => {
                             let registry = self.registry.clone();
                             let mut shutdown_rx = self.shutdown_tx.subscribe();
-                            let event_rx = event_tx.subscribe();
                             tokio::spawn(async move {
-                                let is_cdp = match remo_cdp::dual_stack::looks_like_http(&stream).await {
-                                    Ok(is_cdp) => is_cdp,
-                                    Err(e) => {
-                                        warn!(%peer, "peek error: {e}");
-                                        return;
-                                    }
-                                };
-
-                                if is_cdp {
-                                    info!(%peer, "accepted connection (CDP)");
-                                    let app = build_cdp_app(registry).await;
-                                    tokio::select! {
-                                        _ = remo_cdp::dual_stack::serve_on_stream(stream, app) => {}
-                                        _ = shutdown_rx.recv() => {
-                                            info!("cdp connection handler shutting down");
-                                        }
-                                    }
-                                    return;
-                                }
-
-                                info!(%peer, "accepted connection (legacy)");
-                                let conn = match Connection::new(stream) {
-                                    Ok(conn) => conn,
-                                    Err(e) => {
-                                        warn!(%peer, "legacy codec setup error: {e}");
-                                        return;
-                                    }
-                                };
+                                info!(%peer, "accepted connection");
+                                let app = build_cdp_app(registry).await;
                                 tokio::select! {
-                                    _ = handle_connection(conn, registry, event_rx) => {}
+                                    _ = remo_cdp::dual_stack::serve_on_stream(stream, app) => {}
                                     _ = shutdown_rx.recv() => {
-                                        info!("connection handler shutting down");
+                                        info!("cdp connection handler shutting down");
                                     }
                                 }
                             });
@@ -322,182 +286,4 @@ fn truncate_tree(
 
 fn count_descendants(node: &remo_objc::ViewNode) -> usize {
     node.children.len() + node.children.iter().map(count_descendants).sum::<usize>()
-}
-
-// ---------------------------------------------------------------------------
-// Connection handling
-// ---------------------------------------------------------------------------
-
-async fn handle_connection(
-    conn: Connection,
-    registry: CapabilityRegistry,
-    mut event_rx: broadcast::Receiver<Event>,
-) {
-    let peer = conn.peer_addr();
-    info!(%peer, "handling connection");
-
-    let (mut read_half, write_half) = conn.split();
-    let write_half = Arc::new(Mutex::new(write_half));
-    let sender = crate::streaming::StreamSender::new(Arc::clone(&write_half));
-
-    // Spawn a task to forward capability change events to this client.
-    let event_sender = sender.clone();
-    let event_peer = peer;
-    let event_task = tokio::spawn(async move {
-        loop {
-            match event_rx.recv().await {
-                Ok(event) => {
-                    if let Err(e) = event_sender.send_message(Message::Event(event)).await {
-                        warn!(%event_peer, "event write error: {e}");
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(%event_peer, skipped = n, "event receiver lagged");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-
-    // Active mirror session (only one at a time per connection)
-    let mirror_session: Arc<Mutex<Option<Arc<crate::streaming::MirrorSession>>>> =
-        Arc::new(Mutex::new(None));
-
-    loop {
-        let msg = match read_half.recv().await {
-            Ok(Some(msg)) => msg,
-            Ok(None) => {
-                info!(%peer, "connection closed");
-                break;
-            }
-            Err(e) => {
-                warn!(%peer, "read error: {e}");
-                break;
-            }
-        };
-
-        match msg {
-            Message::Request(req) => {
-                let response_msg =
-                    dispatch_request_with_streaming(&registry, req, &sender, &mirror_session).await;
-
-                if let Err(e) = sender.send_message(response_msg).await {
-                    warn!(%peer, "write error: {e}");
-                    break;
-                }
-            }
-            other => {
-                warn!(%peer, "unexpected message type: {other:?}");
-            }
-        }
-    }
-
-    // Clean up the event forwarding task
-    event_task.abort();
-
-    // Stop any active mirror session on disconnect
-    let session = mirror_session.lock().await.take();
-    if let Some(s) = session {
-        s.stop();
-    }
-}
-
-async fn dispatch_request_with_streaming(
-    registry: &CapabilityRegistry,
-    req: Request,
-    sender: &crate::streaming::StreamSender,
-    mirror_session: &Arc<Mutex<Option<Arc<crate::streaming::MirrorSession>>>>,
-) -> Message {
-    let Request {
-        id,
-        capability,
-        params,
-    } = req;
-
-    match capability.as_str() {
-        "__start_mirror" => {
-            let mut session_guard = mirror_session.lock().await;
-            if session_guard.is_some() {
-                return Message::Response(Response::error(
-                    id,
-                    ErrorCode::StreamAlreadyActive,
-                    "a mirror stream is already active",
-                ));
-            }
-
-            let fps = params
-                .get("fps")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(30)
-                .clamp(1, 120) as u32;
-
-            let stream_id = 1u32;
-            let session = Arc::new(crate::streaming::MirrorSession::new(stream_id));
-            *session_guard = Some(Arc::clone(&session));
-
-            let sender_clone = sender.clone();
-            tokio::spawn(async move {
-                crate::streaming::run_mirror_loop(session, sender_clone, fps).await;
-            });
-
-            Message::Response(Response::ok(
-                id,
-                serde_json::json!({ "stream_id": stream_id }),
-            ))
-        }
-        "__stop_mirror" => {
-            let mut session_guard = mirror_session.lock().await;
-            if let Some(session) = session_guard.take() {
-                session.stop();
-                Message::Response(Response::ok(id, serde_json::json!({ "stopped": true })))
-            } else {
-                Message::Response(Response::error(
-                    id,
-                    ErrorCode::NotFound,
-                    "no active mirror stream",
-                ))
-            }
-        }
-        _ => {
-            dispatch_request(
-                registry,
-                Request {
-                    id,
-                    capability,
-                    params,
-                },
-            )
-            .await
-        }
-    }
-}
-
-async fn dispatch_request(registry: &CapabilityRegistry, req: Request) -> Message {
-    let Request {
-        id,
-        capability,
-        params,
-    } = req;
-
-    match registry.invoke(&capability, params).await {
-        Some(Ok(output)) => match output {
-            crate::registry::HandlerOutput::Json(data) => Message::Response(Response::ok(id, data)),
-            crate::registry::HandlerOutput::Binary { metadata, data } => {
-                Message::BinaryResponse(remo_protocol::BinaryResponse::new(id, metadata, data))
-            }
-        },
-        Some(Err(e)) => {
-            let code = match &e {
-                crate::registry::HandlerError::InvalidParams(_) => ErrorCode::InvalidParams,
-                crate::registry::HandlerError::Internal(_) => ErrorCode::Internal,
-            };
-            Message::Response(Response::error(id, code, e.to_string()))
-        }
-        None => Message::Response(Response::error(
-            id,
-            ErrorCode::NotFound,
-            format!("capability '{capability}' not found"),
-        )),
-    }
 }

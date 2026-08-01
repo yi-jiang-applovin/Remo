@@ -7,10 +7,8 @@ members = [
     "crates/remo-usbmuxd",
     "crates/remo-sdk",
     "crates/remo-objc",
-    "crates/remo-desktop",
     "crates/remo-cli",
     "crates/remo-bonjour",
-    "crates/remo-daemon",
     "crates/remo-cdp",
     "crates/remo-mcp",
 ]
@@ -95,9 +93,6 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 # servers as an actual client.
 tokio-tungstenite = "0.28"
 
-# Open URLs in browser
-open = "5"
-
 # Async trait objects (dyn-safe async fns in traits)
 async-trait = "0.1"
 
@@ -123,13 +118,8 @@ publish = false
 remo-protocol = { path = "crates/remo-protocol" }
 remo-transport = { path = "crates/remo-transport" }
 remo-sdk = { path = "crates/remo-sdk" }
-remo-desktop = { path = "crates/remo-desktop" }
-remo-daemon = { path = "crates/remo-daemon" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
-axum = { workspace = true }
-tower = { workspace = true }
-http = { workspace = true }
 
 [dev-dependencies.tokio-tungstenite]
 workspace = true

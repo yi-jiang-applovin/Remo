@@ -8,4 +8,4 @@ mod streaming;
 
 pub use registry::CapabilityRegistry;
 pub use server::RemoServer;
-pub use streaming::{MirrorSession, StreamSender};
+pub use streaming::{run_mirror_loop, MirrorSession, StreamSender};
