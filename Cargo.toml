@@ -85,6 +85,12 @@ base64 = "0.22"
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["util"] }
 http = "1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# CDP test client only (dev-dependency): a raw WebSocket client for
+# proving the real dual-stack `RemoServer` against actual CDP framing,
+# independent of remo-cdp's own server-side codec.
+tokio-tungstenite = "0.28"
 
 # Open URLs in browser
 open = "5"
@@ -115,3 +121,9 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }
+
+[dev-dependencies.tokio-tungstenite]
+workspace = true
+
+[dev-dependencies.futures]
+workspace = true

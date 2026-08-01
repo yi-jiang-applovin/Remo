@@ -8,6 +8,45 @@ use tracing::{error, info, warn};
 
 use crate::registry::CapabilityRegistry;
 
+/// Builds the CDP router for one connection. A closure, not a fixed
+/// `Router`, because `remo_cdp::domain_page`/`domain_dom` hold
+/// per-connection state (an in-flight screencast session, a node-id table)
+/// that must not leak across clients — see `remo_cdp::transport::DispatcherFactory`.
+async fn build_cdp_app(registry: CapabilityRegistry) -> axum::Router {
+    let build_dispatcher: remo_cdp::transport::DispatcherFactory = Arc::new(move || {
+        let mut dispatcher = remo_cdp::dispatcher::Dispatcher::new();
+        dispatcher.register(Arc::new(crate::cdp_adapter::remo_domain(registry.clone())));
+        dispatcher.register(Arc::new(remo_cdp::domain_page::PageDomain::new()));
+        dispatcher.register(Arc::new(remo_cdp::domain_dom::DomDomain::new()));
+        dispatcher
+    });
+    axum::Router::new()
+        .merge(remo_cdp::discovery::router(
+            remo_cdp::discovery::DiscoveryConfig {
+                page_title: format!("Remo {}", device_name().await),
+                page_id: "1".to_string(),
+            },
+        ))
+        .merge(remo_cdp::transport::router(build_dispatcher))
+}
+
+/// Best-effort device name for the discovery title, so multiple
+/// simulators/devices are distinguishable in `chrome://inspect`. Same
+/// spawn_blocking treatment as the other UIKit-touching capabilities —
+/// this runs inside a per-connection async task, not on tokio's main thread,
+/// so `run_on_main_sync` must not be called from it directly.
+#[allow(unsafe_code)]
+async fn device_name() -> String {
+    tokio::task::spawn_blocking(|| {
+        remo_objc::run_on_main_sync(|| {
+            // SAFETY: run_on_main_sync ensures main-thread execution.
+            unsafe { remo_objc::get_device_info() }.name
+        })
+    })
+    .await
+    .unwrap_or_else(|_| "device".to_string())
+}
+
 /// The embedded RPC server running inside the iOS app.
 pub struct RemoServer {
     registry: CapabilityRegistry,
@@ -41,7 +80,14 @@ impl RemoServer {
         &self,
         port_tx: Option<oneshot::Sender<u16>>,
     ) -> Result<(), remo_transport::TransportError> {
-        let addr: SocketAddr = ([0, 0, 0, 0], self.port).into();
+        // Loopback only, deliberately — not `0.0.0.0`. A real device is
+        // reached over its own USB-tunneled connection (usbmuxd), never
+        // directly over Wi-Fi/LAN; binding every interface would expose an
+        // unauthenticated port with no benefit. This matches the posture
+        // real CDP servers already take (see the rewrite plan's Security
+        // posture section) rather than carrying the old bind-all-interfaces
+        // default over unexamined.
+        let addr: SocketAddr = ([127, 0, 0, 1], self.port).into();
         let listener = Listener::bind(addr).await?;
         let actual_port = listener.local_addr().port();
         info!(port = actual_port, "remo server started");
@@ -61,13 +107,51 @@ impl RemoServer {
             let mut shutdown_rx = self.shutdown_tx.subscribe();
 
             tokio::select! {
-                result = listener.accept() => {
+                // Dual-stack, not a flag day: peek the first bytes of every
+                // accepted connection *before* committing it to either
+                // protocol. Old framing starts with a 4-byte length prefix;
+                // new (CDP) framing starts with an HTTP request line — see
+                // `remo_cdp::dual_stack` for exactly how that's told apart
+                // and why the two can never collide in practice. Existing
+                // clients (today's `remo-cli`, `scripts/e2e-test.sh`) never
+                // see a behavior change; only newly-arriving CDP clients
+                // (Chrome, a rewritten CLI, an agent script) take the new
+                // path.
+                result = listener.accept_raw() => {
                     match result {
-                        Ok(conn) => {
+                        Ok((stream, peer)) => {
                             let registry = self.registry.clone();
                             let mut shutdown_rx = self.shutdown_tx.subscribe();
                             let event_rx = event_tx.subscribe();
                             tokio::spawn(async move {
+                                let is_cdp = match remo_cdp::dual_stack::looks_like_http(&stream).await {
+                                    Ok(is_cdp) => is_cdp,
+                                    Err(e) => {
+                                        warn!(%peer, "peek error: {e}");
+                                        return;
+                                    }
+                                };
+
+                                if is_cdp {
+                                    info!(%peer, "accepted connection (CDP)");
+                                    let app = build_cdp_app(registry).await;
+                                    tokio::select! {
+                                        _ = remo_cdp::dual_stack::serve_on_stream(stream, app) => {}
+                                        _ = shutdown_rx.recv() => {
+                                            info!("cdp connection handler shutting down");
+                                        }
+                                    }
+                                    return;
+                                }
+
+                                info!(%peer, "accepted connection (legacy)");
+                                let conn = match Connection::new(stream) {
+                                    Ok(conn) => conn,
+                                    Err(e) => {
+                                        warn!(%peer, "legacy codec setup error: {e}");
+                                        return;
+                                    }
+                                };
                                 tokio::select! {
                                     _ = handle_connection(conn, registry, event_rx) => {}
                                     _ = shutdown_rx.recv() => {
@@ -110,41 +194,64 @@ fn register_builtins(registry: &CapabilityRegistry) {
 
     registry.register_sync("__ping", |_| Ok(serde_json::json!({"pong": true})));
 
-    registry.register_sync("__view_tree", |params| {
+    // The four capabilities below all call into UIKit/ObjC via
+    // `remo_objc::run_on_main_sync`, which blocks the calling thread until
+    // the main thread services it. `register_sync`'s closures run wherever
+    // `registry.invoke()` happens to be awaited from — today that is a
+    // tokio task spawned per connection, i.e. a worker thread. Blocking a
+    // worker thread until another thread (main) is free is exactly the
+    // starvation hazard the rewrite plan's FFI section calls out: enough
+    // concurrent requests can exhaust tokio's worker pool with threads
+    // parked waiting on the same single main thread. `register` (the async
+    // form) plus `spawn_blocking` moves that wait onto tokio's dedicated
+    // blocking-thread pool instead, so worker threads stay free regardless
+    // of how many of these are in flight at once.
+    registry.register("__view_tree", |params| async move {
         let depth: Option<usize> = params
             .get("max_depth")
             .and_then(serde_json::Value::as_u64)
             .map(|d| d as usize);
 
-        let tree = remo_objc::run_on_main_sync(|| {
-            // SAFETY: run_on_main_sync ensures main-thread execution.
-            let full_tree = unsafe { remo_objc::snapshot_view_tree() };
-            full_tree.map(|t| {
-                if let Some(max) = depth {
-                    truncate_tree(t, max, 0)
-                } else {
-                    t
-                }
+        let tree = tokio::task::spawn_blocking(move || {
+            remo_objc::run_on_main_sync(|| {
+                // SAFETY: run_on_main_sync ensures main-thread execution.
+                let full_tree = unsafe { remo_objc::snapshot_view_tree() };
+                full_tree.map(|t| {
+                    if let Some(max) = depth {
+                        truncate_tree(t, max, 0)
+                    } else {
+                        t
+                    }
+                })
             })
-        });
+        })
+        .await
+        .unwrap_or_default();
 
-        Ok(serde_json::to_value(tree).unwrap_or_default())
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::to_value(tree).unwrap_or_default(),
+        ))
     });
 
-    registry.register_sync_raw("__screenshot", |params| {
+    registry.register("__screenshot", |params| async move {
         let format = params
             .get("format")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("jpeg");
+            .unwrap_or("jpeg")
+            .to_string();
         let quality = params
             .get("quality")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.8);
 
-        let result = remo_objc::run_on_main_sync(|| {
-            // SAFETY: run_on_main_sync ensures main-thread execution.
-            unsafe { remo_objc::capture_screenshot(format, quality) }
-        });
+        let result = tokio::task::spawn_blocking(move || {
+            remo_objc::run_on_main_sync(|| {
+                // SAFETY: run_on_main_sync ensures main-thread execution.
+                unsafe { remo_objc::capture_screenshot(&format, quality) }
+            })
+        })
+        .await
+        .unwrap_or_default();
 
         match result {
             Some(sr) => Ok(crate::registry::HandlerOutput::Binary {
@@ -163,20 +270,32 @@ fn register_builtins(registry: &CapabilityRegistry) {
         }
     });
 
-    registry.register_sync("__device_info", |_| {
-        let info = remo_objc::run_on_main_sync(|| {
-            // SAFETY: run_on_main_sync ensures main-thread execution.
-            unsafe { remo_objc::get_device_info() }
-        });
-        Ok(serde_json::to_value(info).unwrap_or_default())
+    registry.register("__device_info", |_| async move {
+        let info = tokio::task::spawn_blocking(|| {
+            remo_objc::run_on_main_sync(|| {
+                // SAFETY: run_on_main_sync ensures main-thread execution.
+                unsafe { remo_objc::get_device_info() }
+            })
+        })
+        .await
+        .ok();
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::to_value(info).unwrap_or_default(),
+        ))
     });
 
-    registry.register_sync("__app_info", |_| {
-        let info = remo_objc::run_on_main_sync(|| {
-            // SAFETY: run_on_main_sync ensures main-thread execution.
-            unsafe { remo_objc::get_app_info() }
-        });
-        Ok(serde_json::to_value(info).unwrap_or_default())
+    registry.register("__app_info", |_| async move {
+        let info = tokio::task::spawn_blocking(|| {
+            remo_objc::run_on_main_sync(|| {
+                // SAFETY: run_on_main_sync ensures main-thread execution.
+                unsafe { remo_objc::get_app_info() }
+            })
+        })
+        .await
+        .ok();
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::to_value(info).unwrap_or_default(),
+        ))
     });
 }
 

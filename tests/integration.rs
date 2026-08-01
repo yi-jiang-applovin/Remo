@@ -308,6 +308,133 @@ async fn capabilities_changed_event_on_register() {
     shutdown.send(()).ok();
 }
 
+/// Proves the real, embedded `RemoServer` — not the standalone `remo-cdp`
+/// example — serves a genuine CDP client (a raw WebSocket, dialing exactly
+/// the discovery + upgrade path Chrome DevTools itself would use) at the
+/// same time a legacy client is connected to it, over the same listener.
+/// This is Phase 1's concrete acceptance proof: the dual-stack peek in
+/// `RemoServer::run` must route each connection correctly regardless of
+/// what else is attached, not just in isolation (`remo-cdp`'s own tests)
+/// or in theory.
+#[tokio::test]
+async fn dual_stack_serves_cdp_and_legacy_clients_on_the_same_server() {
+    use futures::{SinkExt, StreamExt};
+    use remo_protocol::{Message, Request};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let registry = CapabilityRegistry::new();
+    registry.register_sync("echo", |params| Ok(serde_json::json!({ "echoed": params })));
+
+    let server = RemoServer::new(registry, 0);
+    let shutdown = server.shutdown_handle();
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        server.run(Some(port_tx)).await.unwrap();
+    });
+    let port = tokio::time::timeout(Duration::from_secs(2), port_rx)
+        .await
+        .expect("server did not report port in time")
+        .expect("port sender dropped");
+
+    // A legacy client, connected and idle (matching the two
+    // `capabilities_changed_event_on_*` tests above) — proves the CDP peek
+    // doesn't wedge or otherwise disturb a concurrently-connected legacy
+    // connection on the same server.
+    let legacy_addr = format!("127.0.0.1:{port}").parse().unwrap();
+    let mut legacy_conn = remo_transport::Connection::connect(legacy_addr)
+        .await
+        .expect("legacy client should still connect");
+
+    // Discovery: the same `/json/version` request real Chrome DevTools
+    // sends before ever opening a WebSocket.
+    let discovery: serde_json::Value = http_get_json(port, "/json/version").await;
+    assert!(
+        discovery["remoProtocolVersion"].is_string(),
+        "discovery response: {discovery}"
+    );
+
+    // The CDP path itself: dial the WebSocket upgrade exactly as
+    // `devtools://…?ws=127.0.0.1:<port>/devtools/page/1` would, then issue
+    // a `Remo.invoke` call and confirm the real `CapabilityRegistry` behind
+    // it actually ran.
+    let (mut ws, _response) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/devtools/page/1"))
+            .await
+            .expect("CDP client should be able to open a WebSocket to the real RemoServer");
+
+    ws.send(WsMessage::Text(
+        serde_json::json!({
+            "id": 1,
+            "method": "Remo.invoke",
+            "params": {"name": "echo", "args": {"hello": "cdp"}},
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+
+    let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("should receive a CDP reply within timeout")
+        .expect("stream should not end")
+        .expect("should be a valid WS message");
+
+    let reply_json: serde_json::Value = match reply {
+        WsMessage::Text(text) => serde_json::from_str(&text).unwrap(),
+        other => panic!("expected a text frame, got {other:?}"),
+    };
+    assert_eq!(reply_json["id"], 1);
+    // `Remo.invoke`'s reply wraps the capability's own JSON result under
+    // `result.result` (see `domain_remo.rs::invoke`), and the real
+    // `CapabilityRegistry`'s `echo` handler wraps its input under `echoed`
+    // (see `full_roundtrip` above) — both layers must show up correctly for
+    // this to prove the call reached the actual registry, not a stub.
+    assert_eq!(reply_json["result"]["result"]["echoed"]["hello"], "cdp");
+
+    // The legacy connection is still alive and independently usable —
+    // the CDP client attaching didn't disturb it.
+    legacy_conn
+        .send(Message::Request(Request::new(
+            "echo",
+            serde_json::json!({"hello": "legacy"}),
+        )))
+        .await
+        .expect("legacy connection should remain independently usable");
+    let legacy_reply = tokio::time::timeout(Duration::from_secs(5), legacy_conn.recv())
+        .await
+        .expect("should receive a legacy reply within timeout")
+        .expect("legacy recv should not error")
+        .expect("legacy connection should not have closed");
+    match legacy_reply {
+        Message::Response(resp) => match resp.result {
+            ResponseResult::Ok { data } => assert_eq!(data["echoed"]["hello"], "legacy"),
+            ResponseResult::Error { message, .. } => panic!("expected ok: {message}"),
+        },
+        other => panic!("expected Response, got {other:?}"),
+    }
+
+    shutdown.send(()).ok();
+}
+
+/// A tiny hand-rolled HTTP/1.0 GET, avoiding a full HTTP client crate just
+/// for this one discovery-endpoint assertion (mirrors the technique already
+/// used in `remo-cdp`'s own `dual_stack` tests).
+async fn http_get_json(port: u16, path: &str) -> serde_json::Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let host = format!("127.0.0.1:{port}");
+    let mut stream = tokio::net::TcpStream::connect(&host).await.unwrap();
+    stream
+        .write_all(format!("GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
+    serde_json::from_str(body)
+        .unwrap_or_else(|e| panic!("bad JSON body: {e}\nresponse: {response}"))
+}
+
 #[tokio::test]
 async fn capabilities_changed_event_on_unregister() {
     use remo_protocol::Message;

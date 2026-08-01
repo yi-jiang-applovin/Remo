@@ -22,6 +22,9 @@ remo-cdp = { path = "../remo-cdp" }
 [dependencies.async-trait]
 workspace = true
 
+[dependencies.axum]
+workspace = true
+
 [features]
 default = []
 ios = ["remo-objc/uikit", "remo-cdp/ios"]

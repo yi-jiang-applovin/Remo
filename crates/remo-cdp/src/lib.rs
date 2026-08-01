@@ -25,6 +25,7 @@ pub mod dispatcher;
 pub mod domain_dom;
 pub mod domain_page;
 pub mod domain_remo;
+pub mod dual_stack;
 pub mod remote_object;
 pub mod transport;
 

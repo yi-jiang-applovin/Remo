@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tracing::info;
 
 use crate::connection::Connection;
@@ -22,11 +22,23 @@ impl Listener {
         Ok(Self { inner, local_addr })
     }
 
-    /// Accept the next connection.
+    /// Accept the next connection, already wrapped in the legacy
+    /// length-prefixed codec. Existing callers keep this exact behavior.
     pub async fn accept(&self) -> Result<Connection, TransportError> {
-        let (stream, peer) = self.inner.accept().await?;
+        let (stream, peer) = self.accept_raw().await?;
         info!(%peer, "accepted connection");
         Connection::new(stream)
+    }
+
+    /// Accept the next connection as a raw, unwrapped stream — the seam a
+    /// dual-stack caller needs: peek the first bytes *before* deciding
+    /// whether to wrap it in the legacy codec (`Connection::new`) or hand it
+    /// to a different protocol entirely. Once a stream is wrapped in
+    /// `Connection`, that decision can no longer be made — the codec has
+    /// already taken ownership of it.
+    pub async fn accept_raw(&self) -> Result<(TcpStream, SocketAddr), TransportError> {
+        let (stream, peer) = self.inner.accept().await?;
+        Ok((stream, peer))
     }
 
     pub fn local_addr(&self) -> SocketAddr {
