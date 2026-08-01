@@ -185,6 +185,7 @@ async fn cmd_devices() -> Result<()> {
                             "  {} -> ws://{addr}/devtools/page/1 (dial with --addr {addr})",
                             service.name
                         );
+                        println!("      no CLI? open http://{addr}/console in any browser instead");
                     }
                     None => {
                         println!(

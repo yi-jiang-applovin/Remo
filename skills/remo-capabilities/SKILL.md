@@ -7,7 +7,7 @@ description: Use when mapping an iOS app's screens, routing, and state into Remo
 
 Use this skill to decide what the app should expose to Remo and to keep the capability inventory in sync with the code.
 
-Read `references/cli.md` before using the CLI commands in this workflow or when you need exact flag syntax for discovery, screenshots, tree inspection, capability listing, or capability invocation.
+Read `references/cli.md` before using the CLI (or its zero-install web-console equivalent) commands in this workflow or when you need exact flag syntax for discovery, screenshots, tree inspection, capability listing, or capability invocation.
 
 ## Workflow
 

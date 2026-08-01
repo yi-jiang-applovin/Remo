@@ -19,7 +19,13 @@
 //!   `Emulation` — Track B (real Chrome DevTools frontend compatibility).
 //! - [`domain_dom`] — `DOM`/`CSS`/`Overlay`: the UIView tree as an Elements
 //!   panel.
+//!
+//! [`console`] serves a separate, zero-install `/console` HTML page — not a
+//! CDP domain, but the plain-`http://` counterpart to Track A/B: reaching
+//! `Remo.invoke` without installing `remo-cli`/`remo-mcp`, from any browser
+//! or browser-automation tool.
 
+pub mod console;
 pub mod discovery;
 pub mod dispatcher;
 pub mod domain_dom;

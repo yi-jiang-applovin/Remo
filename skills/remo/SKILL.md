@@ -30,6 +30,10 @@ Use `references/cli.md` for the exact commands. At minimum:
 - ping the selected target
 - capture device and app metadata
 
+No `remo` binary installed for this project (per `remo-setup`'s CLI-or-console choice)? Use
+`http://<addr>/console` and `window.remo.invoke(...)` for every step below instead — see
+`references/cli.md`'s "Zero-install alternative" section for the exact equivalents.
+
 ## Step 2: Start a Verification Session
 
 Create a task-specific directory:
