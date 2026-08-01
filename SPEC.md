@@ -867,3 +867,30 @@ and rejected in favor of this, since it needs nothing beyond Chrome itself, exac
 | `remo tree` / the `__view_tree` built-in capability | Real CDP `DOM.getDocument` — the actual Elements panel, live and inspectable, not a JSON dump of the same `remo_objc::snapshot_view_tree()` data under a different name |
 | The `__screenshot` built-in capability | `Page.captureScreenshot` — what `remo screenshot` already called directly since Phase 2; the capability was a redundant second path to the same `remo_objc::capture_screenshot()` |
 | `Remo.invoke` reachable only via `remo-cli`/`remo-mcp`/a hand-rolled WebSocket client | `crates/remo-cdp/src/domain_remo.rs` also claims `Runtime.evaluate`/`Runtime.getProperties`, so real Chrome DevTools' own Console panel can call `remo.<dotted.name>({...})` directly — a capability's own dots become real object nesting, with live, schema-driven Tab-completion (see the module's doc comment for the full design) |
+
+### 13.5 Generic storage-debugging built-ins
+
+Beyond `__ping`/`__device_info`/`__app_info`, `RemoServer::new` also registers built-ins that are
+genuinely universal to any iOS app rather than something a project registers for itself — the
+same category of capability a similar CDP Storage-panel bridge already proved out for one
+specific app (the plan this rewrite is built on), generalized here to any Remo target:
+
+- `userDefaults.list`/`.get`/`.set`/`.delete` — real `NSUserDefaults` access
+  (`crates/remo-objc/src/user_defaults.rs`). Foundation-only, gated on `target_vendor = "apple"`
+  alone (not the `uikit` feature), which is what let its round-trip tests run for real against
+  this dev machine's own `NSUserDefaults` rather than only ever exercising a stub — and is
+  exactly how a real ObjC ABI bug (`-[NSData bytes]`'s return type encodes as `^v`, not `*const
+  u8`) got caught immediately instead of shipping unverified.
+- `filesystem.list`/`.read`/`.delete` — sandbox file browsing
+  (`crates/remo-objc/src/filesystem.rs`). Pure `std::fs`; the OS sandbox is already the real
+  security boundary (same reasoning `__view_tree`/`__screenshot` never needed extra scoping
+  either), so this layer adds none on top of it. The one Apple-specific piece is resolving the
+  sandbox home directory (`NSHomeDirectory()`) so a relative path means something sensible.
+- `sqlite.query` — arbitrary SQL against any `.sqlite`/`.db` file in the sandbox
+  (`crates/remo-sdk/src/sqlite_query.rs`, via `rusqlite`, `bundled` feature for reliable iOS
+  cross-compilation). Not tied to any specific ORM — SQLite is the thing most persistence
+  stacks bottom out on eventually, which is what makes this generic in a way an app-specific
+  "list my Widgets table" capability couldn't be.
+
+All three are reachable through every path this rewrite built: `Remo.invoke` (CLI/MCP/hand-rolled
+client), and the Console panel's `remo.userDefaults.set({...})`-style direct calls.

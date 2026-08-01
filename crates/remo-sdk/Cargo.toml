@@ -53,5 +53,11 @@ workspace = true
 [dependencies.uuid]
 workspace = true
 
+[dependencies.rusqlite]
+workspace = true
+
+[dependencies.base64]
+workspace = true
+
 [build-dependencies]
 # cbindgen = "0.27"  # Uncomment when generating C headers

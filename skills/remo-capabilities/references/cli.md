@@ -133,6 +133,13 @@ These built-in capabilities are always available (invoke with `remo call`, or th
 - `__list_capabilities`
 - `__device_info`
 - `__app_info`
+- `userDefaults.list` / `userDefaults.get {key}` / `userDefaults.set {key, value}` /
+  `userDefaults.delete {key}` — generic `NSUserDefaults` access, any app
+- `filesystem.list {path?}` / `filesystem.read {path}` / `filesystem.delete {path}` — sandbox
+  file browsing (relative paths resolve against the sandbox home directory; `filesystem.read`
+  returns `{"size", "data_base64"}`)
+- `sqlite.query {path, sql}` — arbitrary SQL against any `.sqlite`/`.db` file in the sandbox;
+  returns `{"columns", "rows"}` for a SELECT or `{"rows_affected"}` otherwise
 
 ## Calling capabilities from the real Console panel (no CLI needed)
 

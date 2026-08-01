@@ -207,4 +207,156 @@ fn register_builtins(registry: &CapabilityRegistry) {
             serde_json::to_value(info).unwrap_or_default(),
         ))
     });
+
+    register_storage_debugging(registry);
+}
+
+/// Generic storage-debugging capabilities — universal to any iOS app, not
+/// something the app has to register for itself, mirroring what a similar
+/// CDP Storage-panel bridge already did for one specific app (the plan this
+/// rewrite is built on): `NSUserDefaults` key/value access, sandbox
+/// filesystem browsing, and arbitrary SQLite queries.
+#[allow(unsafe_code)]
+fn register_storage_debugging(registry: &CapabilityRegistry) {
+    // NSUserDefaults is documented thread-safe by Apple, so — unlike
+    // __device_info/__app_info above — these don't need run_on_main_sync;
+    // the `unsafe` here is only the FFI call shape itself, not a threading
+    // requirement.
+    registry.register("userDefaults.list", |_| async move {
+        // SAFETY: NSUserDefaults is thread-safe; no main-thread requirement.
+        let entries = unsafe { remo_objc::list_user_defaults() };
+        let map: serde_json::Map<String, serde_json::Value> = entries.into_iter().collect();
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::Value::Object(map),
+        ))
+    });
+
+    registry.register("userDefaults.get", |params| async move {
+        let key = params
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"key\"".into())
+            })?
+            .to_string();
+        // SAFETY: NSUserDefaults is thread-safe; no main-thread requirement.
+        let value = unsafe { remo_objc::get_user_default(&key) };
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "key": key, "value": value }),
+        ))
+    });
+
+    registry.register("userDefaults.set", |params| async move {
+        let key = params
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"key\"".into())
+            })?
+            .to_string();
+        let value = params.get("value").cloned().ok_or_else(|| {
+            crate::registry::HandlerError::InvalidParams("requires a \"value\"".into())
+        })?;
+        // SAFETY: NSUserDefaults is thread-safe; no main-thread requirement.
+        unsafe { remo_objc::set_user_default(&key, &value) }
+            .map_err(crate::registry::HandlerError::InvalidParams)?;
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "key": key, "value": value }),
+        ))
+    });
+
+    registry.register("userDefaults.delete", |params| async move {
+        let key = params
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"key\"".into())
+            })?
+            .to_string();
+        // SAFETY: NSUserDefaults is thread-safe; no main-thread requirement.
+        unsafe { remo_objc::delete_user_default(&key) };
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "key": key, "deleted": true }),
+        ))
+    });
+
+    // Filesystem and SQLite calls are genuine blocking disk I/O (no ObjC/
+    // main-thread involved) — spawn_blocking keeps that off tokio's async
+    // worker pool, same reasoning as __device_info/__app_info above, just
+    // for a different kind of blocking call.
+    registry.register("filesystem.list", |params| async move {
+        let path = params
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let entries = tokio::task::spawn_blocking(move || remo_objc::list_directory(&path))
+            .await
+            .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+            .map_err(crate::registry::HandlerError::InvalidParams)?;
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::to_value(entries).unwrap_or_default(),
+        ))
+    });
+
+    registry.register("filesystem.read", |params| async move {
+        let path = params
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"path\"".into())
+            })?
+            .to_string();
+        let bytes = tokio::task::spawn_blocking(move || remo_objc::read_file(&path))
+            .await
+            .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+            .map_err(crate::registry::HandlerError::InvalidParams)?;
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "size": bytes.len(), "data_base64": encoded }),
+        ))
+    });
+
+    registry.register("filesystem.delete", |params| async move {
+        let path = params
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"path\"".into())
+            })?
+            .to_string();
+        tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || remo_objc::delete_path(&path)
+        })
+        .await
+        .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+        .map_err(crate::registry::HandlerError::InvalidParams)?;
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "path": path, "deleted": true }),
+        ))
+    });
+
+    registry.register("sqlite.query", |params| async move {
+        let path = params
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"path\"".into())
+            })?
+            .to_string();
+        let sql = params
+            .get("sql")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"sql\"".into())
+            })?
+            .to_string();
+        let result = tokio::task::spawn_blocking(move || crate::sqlite_query::query(&path, &sql))
+            .await
+            .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+            .map_err(crate::registry::HandlerError::InvalidParams)?;
+        Ok(crate::registry::HandlerOutput::Json(result))
+    });
 }

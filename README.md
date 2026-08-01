@@ -244,6 +244,9 @@ These are registered automatically by the SDK — no setup required:
 | `__list_capabilities` | List all registered capabilities |
 | `__device_info` | Device model, OS version, screen dimensions |
 | `__app_info` | Bundle ID, version, build number, display name |
+| `userDefaults.list` / `.get` / `.set` / `.delete` | Read/write/remove `NSUserDefaults` keys — generic to any app, not something you register yourself |
+| `filesystem.list` / `.read` / `.delete` | Browse, read, and delete files in the app's own sandbox (relative paths resolve against the sandbox home directory) |
+| `sqlite.query` | Run arbitrary SQL against any `.sqlite`/`.db` file in the sandbox — works with any ORM's backing store, not tied to one |
 
 `__view_tree` and `__screenshot` used to live here too — removed once real CDP made them
 redundant Track-A duplicates of Track B: use the Elements panel (`DOM.getDocument`) and

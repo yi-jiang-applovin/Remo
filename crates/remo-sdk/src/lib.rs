@@ -3,6 +3,7 @@ pub mod cdp_adapter;
 pub mod ffi;
 pub mod registry;
 pub mod server;
+pub mod sqlite_query;
 #[allow(unsafe_code)]
 mod streaming;
 

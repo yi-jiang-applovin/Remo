@@ -181,6 +181,115 @@ async fn discovery_and_websocket_are_both_reachable_on_the_real_server() {
     server_handle.abort();
 }
 
+/// Proves the generic storage-debugging built-ins (`userDefaults.*`,
+/// `filesystem.*`, `sqlite.query`) are reachable end to end through the real
+/// server — registered by `RemoServer::new` itself (see
+/// `remo-sdk/src/server.rs::register_storage_debugging`), not something a
+/// test has to register — via a real CDP `Remo.invoke` round trip, the same
+/// path `remo-cli`/`remo-mcp`/the Console panel all use.
+#[tokio::test]
+async fn storage_debugging_capabilities_are_reachable_over_cdp() {
+    let registry = CapabilityRegistry::new();
+    let server = RemoServer::new(registry, 0);
+    let shutdown = server.shutdown_handle();
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel();
+    let server_handle = tokio::spawn(async move {
+        server.run(Some(port_tx)).await.unwrap();
+    });
+    let port = tokio::time::timeout(Duration::from_secs(2), port_rx)
+        .await
+        .expect("server did not report port in time")
+        .expect("port sender dropped");
+
+    let mut client = TestCdpClient::connect(port).await;
+
+    // userDefaults.* — a real NSUserDefaults key on whatever machine runs
+    // this test, scoped under a test-only prefix so it never collides with
+    // real app state.
+    let key = format!("remo.integration-test.{}", std::process::id());
+    let set_result = client
+        .invoke("userDefaults.set", json!({"key": key, "value": "hello"}))
+        .await;
+    assert_eq!(set_result["value"], "hello");
+
+    let get_result = client.invoke("userDefaults.get", json!({"key": key})).await;
+    assert_eq!(get_result["value"], "hello");
+
+    let list_result = client.invoke("userDefaults.list", json!({})).await;
+    assert_eq!(list_result[&key], "hello");
+
+    let delete_result = client
+        .invoke("userDefaults.delete", json!({"key": key}))
+        .await;
+    assert_eq!(delete_result["deleted"], true);
+
+    let get_after_delete = client.invoke("userDefaults.get", json!({"key": key})).await;
+    assert_eq!(get_after_delete["value"], Value::Null);
+
+    // filesystem.* — a real temp file/directory.
+    let dir = std::env::temp_dir().join(format!("remo-integration-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("hello.txt"), b"hello world").unwrap();
+
+    let list_dir = client
+        .invoke("filesystem.list", json!({"path": dir.to_str().unwrap()}))
+        .await;
+    let entries = list_dir.as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["name"], "hello.txt");
+
+    let read_result = client
+        .invoke(
+            "filesystem.read",
+            json!({"path": dir.join("hello.txt").to_str().unwrap()}),
+        )
+        .await;
+    assert_eq!(read_result["size"], 11);
+
+    let delete_file_result = client
+        .invoke("filesystem.delete", json!({"path": dir.to_str().unwrap()}))
+        .await;
+    assert_eq!(delete_file_result["deleted"], true);
+    assert!(!dir.exists());
+
+    // sqlite.query — a real temp SQLite database.
+    let db_path = std::env::temp_dir().join(format!(
+        "remo-integration-test-{}.sqlite",
+        std::process::id()
+    ));
+    let db_path_str = db_path.to_str().unwrap();
+
+    let create = client
+        .invoke(
+            "sqlite.query",
+            json!({"path": db_path_str, "sql": "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"}),
+        )
+        .await;
+    assert_eq!(create["rows_affected"], 0);
+
+    let insert = client
+        .invoke(
+            "sqlite.query",
+            json!({"path": db_path_str, "sql": "INSERT INTO items (name) VALUES ('widget')"}),
+        )
+        .await;
+    assert_eq!(insert["rows_affected"], 1);
+
+    let select = client
+        .invoke(
+            "sqlite.query",
+            json!({"path": db_path_str, "sql": "SELECT id, name FROM items"}),
+        )
+        .await;
+    assert_eq!(select["columns"], json!(["id", "name"]));
+    assert_eq!(select["rows"], json!([[1, "widget"]]));
+
+    std::fs::remove_file(&db_path).ok();
+
+    shutdown.send(()).ok();
+    server_handle.abort();
+}
+
 /// A tiny hand-rolled HTTP/1.0 GET, avoiding a full HTTP client crate just
 /// for this one discovery-endpoint assertion (mirrors the technique already
 /// used in `remo-cdp`'s own `dual_stack` tests).

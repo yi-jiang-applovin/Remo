@@ -107,6 +107,14 @@ chromiumoxide_types = "0.9"
 rmcp = "3"
 schemars = "1"
 
+# SQLite: generic `sqlite.query` capability (remo-sdk), any .sqlite/.db file
+# in the app's own sandbox, not tied to any specific ORM (GRDB, Core Data's
+# own store, a hand-rolled schema). "bundled" compiles SQLite from source
+# instead of linking whatever system libsqlite3 a target provides — slower
+# to build, but the one choice that's reliably available when cross-compiling
+# for iOS, not just this dev machine.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 [package]
 name = "remo-workspace"
 version.workspace = true
