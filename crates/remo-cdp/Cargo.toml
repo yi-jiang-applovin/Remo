@@ -1,0 +1,38 @@
+[package]
+name = "remo-cdp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Standalone by design: no dependency on remo-protocol/remo-transport/remo-sdk.
+# This crate is the new wire-format path; remo-sdk depends on it, not the
+# other way around (see Phase 1 in the plan).
+remo-objc = { path = "../remo-objc" }
+
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }
+chromiumoxide_cdp = { workspace = true }
+chromiumoxide_types = { workspace = true }
+base64 = { workspace = true }
+
+[features]
+default = []
+# Real UIKit introspection (view tree, screenshot) vs remo-objc's stub.
+ios = ["remo-objc/uikit"]
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

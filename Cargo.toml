@@ -11,6 +11,7 @@ members = [
     "crates/remo-cli",
     "crates/remo-bonjour",
     "crates/remo-daemon",
+    "crates/remo-cdp",
 ]
 
 [workspace.lints.clippy]
@@ -87,6 +88,14 @@ http = "1"
 
 # Open URLs in browser
 open = "5"
+
+# Async trait objects (dyn-safe async fns in traits)
+async-trait = "0.1"
+
+# CDP: typed structs generated from Chrome's own protocol.json/PDL, for the
+# standard domains (Page/DOM/CSS/Overlay) remo-cdp reuses.
+chromiumoxide_cdp = "0.9"
+chromiumoxide_types = "0.9"
 
 [package]
 name = "remo-workspace"
