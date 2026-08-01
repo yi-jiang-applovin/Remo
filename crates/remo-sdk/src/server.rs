@@ -27,7 +27,6 @@ async fn build_cdp_app(registry: CapabilityRegistry) -> axum::Router {
             },
         ))
         .merge(remo_cdp::transport::router(build_dispatcher))
-        .merge(remo_cdp::console::router())
 }
 
 /// Best-effort device name for the discovery title, so multiple

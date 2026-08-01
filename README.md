@@ -229,13 +229,6 @@ There's no `dashboard`/`mirror`/`start`/`stop`/`status`/`watch` command anymore 
 [`skills/remo/references/cli.md`](skills/remo/references/cli.md#what-moved) for what replaced
 each one (mostly: `chrome://inspect`'s own panels, or a tracked follow-up).
 
-**Don't want to install `remo` at all?** Every target also serves a self-contained
-`http://<addr>/console` page — no download. It covers `Remo.invoke`/`Remo.listCapabilities`
-through a small form, and exposes a `window.remo` JS object (`invoke`, `listCapabilities`, and a
-raw `call` for any CDP method) that a browser-automation tool (Playwright, `chrome-devtools-mcp`,
-etc.) can drive directly — useful for an agent that would rather not add a CLI dependency the
-user didn't ask for.
-
 For a full command guide, see:
 
 - [`skills/remo-setup/references/cli.md`](skills/remo-setup/references/cli.md) for the distributed onboarding CLI reference

@@ -7,19 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Zero-install web console** at `http://<addr>/console` on every Remo target. Covers
-  `Remo.invoke`/`Remo.listCapabilities` through a small self-contained page — no `remo-cli` or
-  `remo-mcp` download required. Also exposes a `window.remo` JS object
-  (`invoke`/`listCapabilities`/a raw `call` for any CDP method) so a browser-automation tool
-  (Playwright, `chrome-devtools-mcp`, etc.) can drive it directly via evaluate. `remo devices`
-  and the discovery endpoints (`/json`, `/json/version`'s new `remoConsoleUrl` field) surface the
-  URL so it's discoverable without reading docs first.
-- **`remo-setup` skill**: now asks up front whether to install the CLI or use the web console
-  instead, then drives whichever path is chosen — installing the CLI is no longer treated as a
-  mandatory step of onboarding Remo into a project.
-
 ### Changed
 
 - **Rewritten onto real Chrome DevTools Protocol.** `remo-sdk`'s embedded server now speaks CDP

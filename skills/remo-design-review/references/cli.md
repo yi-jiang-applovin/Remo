@@ -137,36 +137,3 @@ These built-in capabilities are always available (invoke with `remo call`, or th
 | Connection refused | Re-run `remo devices` and use the fresh address |
 | Capability not found | Run `remo capabilities -a $ADDR` |
 | Screenshot is black | Bring the simulator to the foreground |
-
-## Zero-install alternative: the web console
-
-Installing `remo` is optional, not required. Every Remo target also serves a self-contained
-`http://<addr>/console` page — no download, just a browser (or a browser-automation tool an
-agent already has). It covers the same core capability workflow as the CLI:
-
-- A human-usable form: enter a capability name + JSON args, click Invoke; "List capabilities"
-  populates a clickable list.
-- A `window.remo` JS object for programmatic use: `await remo.listCapabilities()`,
-  `await remo.invoke(name, args)`, and `await remo.call(method, params)` (the raw CDP escape
-  hatch — any domain method, e.g. `remo.call("Page.captureScreenshot", {format: "jpeg"})`, not
-  just `Remo.*`). Opening the page logs a one-line usage hint to the browser console, so it's
-  self-discoverable without reading this file.
-
-**If you (the agent) have a browser-automation tool available** (Playwright MCP,
-`chrome-devtools-mcp`, or similar) and remo-cli isn't installed and the user didn't ask for it,
-drive the console directly instead of asking the user to install anything:
-
-1. Navigate the tool to `http://<addr>/console` (get `<addr>` from `chrome://inspect`'s device
-   list, a known port, or Bonjour/USB discovery output if you have another way to get it without
-   the CLI).
-2. Evaluate JS in that page's context: `await window.remo.invoke("__ping", {})`,
-   `await window.remo.listCapabilities()`, etc. — same result shapes as `remo call`/
-   `remo capabilities` (`invoke`'s return value is already unwrapped, matching `remo call`'s
-   `.data`-free output).
-3. For a screenshot, `await window.remo.call("Page.captureScreenshot", {format: "jpeg", quality: 80})`
-   returns `{data: <base64>}` — decode `data` to bytes the same way `remo screenshot` does.
-
-This is not a replacement for `remo tree`/`remo info`/`remo screenshot`'s convenience (those still
-need the CLI or hand-rolled equivalents against `__view_tree`/`__device_info`/`__app_info`), but
-it means "no CLI installed yet" is never a hard blocker for basic capability invocation and
-verification.

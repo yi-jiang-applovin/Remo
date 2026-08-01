@@ -63,12 +63,6 @@ async fn version(headers: HeaderMap, State(config): State<Arc<DiscoveryConfig>>)
         "Protocol-Version": "1.3",
         "remoProtocolVersion": REMO_PROTOCOL_VERSION,
         "webSocketDebuggerUrl": debugger_url(&host, &config.page_id),
-        // Self-describing on purpose: a client (human or agent) that only
-        // ever fetches this one well-known discovery endpoint — the same
-        // one it needs anyway to get `webSocketDebuggerUrl` — can find the
-        // zero-install `Remo.invoke` path (see `console.rs`) without reading
-        // any external docs first.
-        "remoConsoleUrl": console_url(&host),
     }))
 }
 
@@ -90,8 +84,4 @@ async fn list(headers: HeaderMap, State(config): State<Arc<DiscoveryConfig>>) ->
 
 fn debugger_url(host: &str, page_id: &str) -> String {
     format!("ws://{host}/devtools/page/{page_id}")
-}
-
-fn console_url(host: &str) -> String {
-    format!("http://{host}/console")
 }

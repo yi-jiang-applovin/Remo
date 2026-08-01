@@ -82,15 +82,13 @@ async fn serve() {
             page_title: "Remo standalone".to_string(),
             page_id: "1".to_string(),
         }))
-        .merge(transport::router(build_dispatcher))
-        .merge(remo_cdp::console::router());
+        .merge(transport::router(build_dispatcher));
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", PORT))
         .await
         .expect("bind 127.0.0.1:9930 — is another instance already running?");
     println!("remo-cdp standalone listening on 127.0.0.1:{PORT}");
     println!("devtools://devtools/bundled/inspector.html?ws=127.0.0.1:{PORT}/devtools/page/1");
-    println!("http://127.0.0.1:{PORT}/console  (zero-install Remo.invoke — no remo-cli needed)");
 
     axum::serve(listener, app).await.expect("server error");
 }

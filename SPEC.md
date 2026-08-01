@@ -826,15 +826,6 @@ pooling) that a fixed, already-adopted protocol makes redundant.
   `remo-desktop`'s dashboard be deleted rather than ported — DevTools' own UI covers the same
   ground.
 
-Track B needs nothing but Chrome itself — zero install. Track A used to need *something*
-speaking CDP on the client's behalf (`remo-cli`, `remo-mcp`, or a hand-rolled WebSocket client),
-since Chrome's own UI has no button for an unrecognized domain. `crates/remo-cdp/src/console.rs`
-closes that gap: a self-contained `/console` HTML page (no build step, no CDN) served over the
-same plain `http://` origin, providing both a minimal human form and a `window.remo` JS object
-(`invoke`/`listCapabilities`/a raw `call` escape hatch) that any browser-automation tool an agent
-already has can drive via "navigate, then evaluate" — no CLI or MCP server install required for
-Track A either, not just Track B.
-
 ### 13.3 Non-goals (v1)
 
 - **DOM tree is a snapshot, not live.** `DOM.getDocument`/`requestChildNodes` walk the UIView
