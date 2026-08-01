@@ -15,10 +15,16 @@ remo-protocol = { path = "../remo-protocol" }
 remo-transport = { path = "../remo-transport" }
 remo-objc = { path = "../remo-objc" }
 remo-bonjour = { path = "../remo-bonjour" }
+# One-directional per the rewrite plan: remo-sdk depends on remo-cdp, never
+# the other way around — remo-cdp stays standalone (see its own Cargo.toml).
+remo-cdp = { path = "../remo-cdp" }
+
+[dependencies.async-trait]
+workspace = true
 
 [features]
 default = []
-ios = ["remo-objc/uikit"]
+ios = ["remo-objc/uikit", "remo-cdp/ios"]
 
 [dependencies.tokio]
 workspace = true

@@ -1,3 +1,4 @@
+pub mod cdp_adapter;
 #[allow(unsafe_code)]
 pub mod ffi;
 pub mod registry;

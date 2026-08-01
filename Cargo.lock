@@ -1589,9 +1589,11 @@ dependencies = [
 name = "remo-sdk"
 version = "0.4.4"
 dependencies = [
+ "async-trait",
  "dashmap",
  "futures",
  "remo-bonjour",
+ "remo-cdp",
  "remo-objc",
  "remo-protocol",
  "remo-transport",
