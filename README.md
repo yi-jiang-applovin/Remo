@@ -18,7 +18,7 @@ Or watch the raw demo video: [remo_demo.mov](https://github.com/yjmeqt/Remo/rele
 # Agent writes code, triggers a build, then drives the app via Remo:
 
 remo devices                                                          # discover real devices (USB) & simulators
-remo list -a <addr>                                                   # inspect available capabilities
+remo capabilities -a <addr>                                           # inspect available capabilities
 remo call -a <addr> grid.feed.append '{"title":"Ship It"}'            # invoke a capability
 remo call -a <addr> grid.tab.select '{"id":"feed"}'                   # move the app into the next state
 ```
@@ -175,28 +175,33 @@ Manual release downloads are also available on the GitHub Releases page if you p
 
 ```bash
 remo devices                                            # discover real devices & simulators
-remo list -a <addr>                                     # inspect registered capabilities
+remo capabilities -a <addr>                             # inspect registered capabilities
 remo call -a <addr> myFeature.toggle '{"enabled":true}' # invoke your capability
-remo dashboard                                          # open the multi-device web dashboard
 ```
 
-For simulator automation, screenshots, recording, and broader inspection, use `xcodebuildmcp` alongside Remo.
+For simulator automation, screenshots, recording, and broader inspection, use `xcodebuildmcp` alongside Remo. For agent-facing access, `remo-mcp` exposes the same capability surface as three MCP tools instead of a CLI.
 
 ## How It Works
+
+Remo speaks real Chrome DevTools Protocol now — the iOS SDK's server is a genuine CDP target,
+reachable from `chrome://inspect`, `remo` (a thin CDP client), `remo-mcp`, or any other CDP
+client.
 
 ```
 ┌──────────────────────────────────────┐
 │  macOS                               │
-│  remo CLI / AI agent                 │
+│  remo CLI / remo-mcp / chrome://inspect │
 │  ├── USB discovery (usbmuxd)        │
 │  ├── Simulator discovery (Bonjour)   │
-│  └── RPC client                      │
+│  └── CDP client (WebSocket)          │
 └──────────┬───────────────────────────┘
-           │ TCP (USB tunnel / localhost)
+           │ WS/HTTP (USB tunnel / localhost)
 ┌──────────▼───────────────────────────┐
 │  iOS                                 │
 │  remo-sdk (Rust static lib)          │
-│  ├── TCP server (tokio)              │
+│  ├── CDP server (remo-cdp): HTTP     │
+│  │   discovery + WS, Page/DOM/CSS/   │
+│  │   Overlay + custom Remo.* domain  │
 │  ├── Capability registry             │
 │  ├── Bonjour advertisement           │
 │  ├── Built-in: view tree, app info   │
@@ -207,25 +212,22 @@ For simulator automation, screenshots, recording, and broader inspection, use `x
 └──────────────────────────────────────┘
 ```
 
-The iOS SDK starts a TCP server inside your app. Real devices are discovered via USB (usbmuxd), simulators via Bonjour/mDNS. The macOS CLI (or any AI agent) sends JSON-RPC requests to discover and invoke capabilities. Pair it with `xcodebuildmcp` when you need simulator automation or inspection outside the app boundary.
+The iOS SDK starts a real CDP server inside your app. Real devices are discovered via USB (usbmuxd), simulators via Bonjour/mDNS. `remo` (or `remo-mcp`, or Chrome itself) dials the resolved `ws://` URL and calls `Remo.invoke`/`Remo.listCapabilities` to discover and invoke capabilities — the standard `Page`/`DOM`/`CSS`/`Overlay` domains are also implemented, so `chrome://inspect` renders Elements/Console/screencast against the app directly. Pair it with `xcodebuildmcp` when you need simulator automation or inspection outside the app boundary.
 
 ## CLI Commands
 
 ```bash
-remo devices                              # Auto-discover devices (USB + Bonjour)
-remo call -a <addr> <capability> [params] # Invoke a capability
-remo list -a <addr>                       # List registered capabilities
-remo screenshot -a <addr> -o out.jpg      # Take a screenshot
+remo devices                              # Auto-discover devices (USB + Bonjour), resolved to ws:// CDP URLs
+remo call -a <addr> <capability> [params] # Invoke a capability (Remo.invoke)
+remo capabilities -a <addr>               # List registered capabilities (Remo.listCapabilities)
+remo screenshot -a <addr> -o out.jpg      # Take a screenshot (Page.captureScreenshot)
 remo tree -a <addr>                       # Dump view hierarchy
 remo info -a <addr>                       # Show device & app info
-remo mirror -a <addr> --web               # Live screen mirror (H.264 → fMP4)
-remo mirror -a <addr> --save out.mp4      # Record screen to file
-remo watch -a <addr>                      # Stream events from device
-remo dashboard                            # Web demo page
-remo start [-d]                           # Start the daemon (foreground or background)
-remo stop                                 # Stop the daemon
-remo status                               # Check daemon health and device count
 ```
+
+There's no `dashboard`/`mirror`/`start`/`stop`/`status`/`watch` command anymore — see
+[`skills/remo/references/cli.md`](skills/remo/references/cli.md#what-moved) for what replaced
+each one (mostly: `chrome://inspect`'s own panels, or a tracked follow-up).
 
 For a full command guide, see:
 
@@ -298,15 +300,15 @@ cargo build -p remo-cli              # Build the CLI
 
 | Crate | Description |
 |-------|-------------|
-| `remo-protocol` | Message types + length-prefixed JSON framing codec |
+| `remo-protocol` | Legacy length-prefixed JSON framing codec (retained by `remo-transport`/`remo-sdk`, no longer the only wire format) |
 | `remo-transport` | Bidirectional connection over TCP or Unix socket |
 | `remo-usbmuxd` | macOS usbmuxd client — device discovery + USB tunneling |
 | `remo-bonjour` | Bonjour/mDNS service registration and discovery |
-| `remo-sdk` | iOS embedded server + capability registry + C FFI |
+| `remo-sdk` | iOS embedded CDP server + capability registry + C FFI |
 | `remo-objc` | ObjC runtime bridge via `objc2` (view tree, device/app info, media hooks) |
-| `remo-desktop` | macOS library — device manager, RPC client, web dashboard, fMP4 muxer |
-| `remo-daemon` | Background daemon — connection pool, HTTP/WebSocket API, event bus |
-| `remo-cli` | CLI entry point |
+| `remo-cdp` | Real Chrome DevTools Protocol: HTTP discovery, WS dispatcher, `Page`/`DOM`/`CSS`/`Overlay` domains, the custom `Remo.*` domain |
+| `remo-cli` | Thin CDP client CLI |
+| `remo-mcp` | Agent-facing MCP companion server (`list_capabilities`/`invoke_capability`/`get_view_tree`) |
 
 ### Project Status
 

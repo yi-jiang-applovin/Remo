@@ -37,23 +37,32 @@ SKIP_BUILD=1 ./scripts/e2e-test.sh        # skip build phase
 ### Crate topology (dependency order)
 
 ```
-remo-protocol      — Message types (Request/Response/Event), framing codec
+remo-protocol      — Legacy length-prefixed framing codec (retained by remo-transport/remo-sdk)
 remo-transport     — Framed TCP/Unix socket bidirectional connection
 remo-usbmuxd      — macOS USB device discovery via /var/run/usbmuxd
 remo-bonjour       — DNS-SD wrapper for Bonjour discovery & registration
 remo-objc          — ObjC runtime bridge (view tree, screenshot, device/app info)
-remo-sdk           — iOS embedded TCP server + capability registry + FFI boundary
-remo-desktop       — macOS device manager, RPC client, web dashboard, fMP4 muxer
-remo-daemon        — Background daemon: connection pool, HTTP/WS API, event bus
-remo-cli           — CLI entry point (clap), delegates to remo-desktop/remo-daemon
+remo-cdp           — Real CDP: HTTP discovery, WS dispatcher, Page/DOM/CSS/Overlay + custom Remo.* domain
+remo-sdk           — iOS embedded CDP server (via remo-cdp) + capability registry + FFI boundary
+remo-cli           — Thin CDP client CLI (devices/capabilities/call/tree/screenshot/info)
+remo-mcp           — Agent-facing MCP companion server, proxying to the Remo.* CDP domain
 ```
+
+`remo-desktop` (device manager, RPC client, web dashboard, fMP4 muxer) and `remo-daemon`
+(connection pool, HTTP/WS API, event bus) were deleted in the CDP rewrite — `chrome://inspect`'s
+own panels and a daemon-free direct-dial CLI made them unnecessary. See SPEC.md §13 for the
+rewrite's full rationale and what replaced them.
 
 ### Wire protocol
 
-Length-prefixed framing: `[u32 BE length][u8 type][payload]`. Three frame types:
-- `0x00` JSON — JSON-RPC messages (Request, Response, Event)
-- `0x01` Binary — raw bytes (screenshots)
-- `0x02` Stream — H.264 NALUs for video streaming
+`remo-sdk` now speaks real CDP by default: HTTP discovery (`/json`, `/json/version`) + a
+WebSocket upgrade at `/devtools/page/1`, envelopes shaped like Chrome's own
+(`{id,method,params}` / `{id,result}` / `{id,error}` / `{method,params}` for events). See
+`crates/remo-cdp`'s module docs for the dispatcher/domain model.
+
+The old length-prefixed framing (`[u32 BE length][u8 type][payload]`, three frame types: `0x00`
+JSON, `0x01` Binary, `0x02` Stream) still exists in `remo-protocol`/`remo-transport` but has no
+live server-side handler anymore — `RemoServer::run` no longer routes any connection to it.
 
 ### FFI boundary (remo-sdk → Swift)
 

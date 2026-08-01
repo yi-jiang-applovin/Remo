@@ -7,7 +7,7 @@ description: Use when Remo is already integrated and you need day-to-day iOS ver
 
 Use this skill for the normal development loop after setup is complete.
 
-Read `references/cli.md` before running commands, when you need exact CLI syntax, or when you are considering `remo mirror --save` and need to account for its current timing caveat.
+Read `references/cli.md` before running commands, when you need exact CLI syntax, or when you need to know what moved in the CDP rewrite (no more `mirror`/`dashboard`/`start`/`stop`/`status`/`watch`).
 
 ## Core Loop
 
@@ -133,6 +133,8 @@ Choose the lightest mode that proves the behavior:
 - tree for structure and hierarchy
 - capability call for hidden state
 - multi-screen navigation checks for regression coverage
-- mirror only when a moving interaction matters
 
-If you use `remo mirror --save`, check `references/cli.md` first. The saved video currently compresses idle periods and is not a wall-clock-accurate recording format.
+There is no `remo mirror` anymore — the high-fidelity recording path hasn't been ported to CDP
+yet (see `references/cli.md`'s "What moved"). For a moving interaction, fall back to
+`xcrun simctl io ... recordVideo`, or Chrome's own `Page.startScreencast`-backed screencast panel
+in `chrome://inspect`.

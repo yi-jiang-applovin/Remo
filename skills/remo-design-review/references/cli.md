@@ -2,6 +2,11 @@
 
 This reference travels with the skill so the setup workflow does not depend on repository-only docs.
 
+Remo speaks real Chrome DevTools Protocol now — `remo` is a thin CDP client, not a
+protocol/daemon/dashboard bundle. `chrome://inspect` (or any CDP client) can drive the same
+target directly; this CLI exists for the one thing a fixed protocol can't provide on its own:
+invoking arbitrary, developer-named app capabilities (`Remo.invoke`).
+
 ## Install the Binary
 
 Choose one install path:
@@ -49,25 +54,21 @@ remo -vvv <command>
 
 | Command | Purpose | Example |
 |---------|---------|---------|
-| `remo devices` | Discover simulators and devices | `remo devices` |
-| `remo call` | Invoke a capability | `remo call -a $ADDR "__ping" '{}'` |
-| `remo list` | List registered capabilities | `remo list -a $ADDR` |
-| `remo watch` | Stream events | `remo watch -a $ADDR` |
+| `remo devices` | Discover simulators (Bonjour) and devices (USB), resolved to dialable `ws://` CDP URLs | `remo devices` |
+| `remo call` | Invoke a capability (`Remo.invoke`) | `remo call -a $ADDR "__ping" '{}'` |
+| `remo capabilities` | List registered capabilities (`Remo.listCapabilities`) | `remo capabilities -a $ADDR` |
 | `remo tree` | Dump the view hierarchy | `remo tree -a $ADDR -m 4` |
-| `remo screenshot` | Save a screenshot | `remo screenshot -a $ADDR -o shot.jpg` |
+| `remo screenshot` | Save a screenshot (`Page.captureScreenshot`) | `remo screenshot -a $ADDR -o shot.jpg` |
 | `remo info` | Print device and app metadata | `remo info -a $ADDR` |
-| `remo mirror` | Live mirror or MP4 save | `remo mirror -a $ADDR --web --save out.mp4` |
-| `remo dashboard` | Launch the dashboard | `remo dashboard --port 8080` |
-| `remo start` | Start the daemon | `remo start -d` |
-| `remo stop` | Stop the daemon | `remo stop` |
-| `remo status` | Check daemon health | `remo status` |
+
+There is no `dashboard`/`start`/`stop`/`status`/`mirror` command anymore — see "What moved" below.
 
 ## Connection Model
 
-Most device-targeted commands use one of these:
+Every command takes one of these:
 
-- `-a, --addr <host:port>` for direct TCP, common with simulators
-- `-d, --device <usb-device-id>` for USB discovery, which overrides `--addr`
+- `-a, --addr <host:port>` for direct TCP (simulator; over Bonjour discovery for wired setups this resolves to `127.0.0.1:<port>`)
+- `-d, --device <usb-device-id>` for a real device over usbmuxd, which overrides `--addr`
 
 Simulator addresses can change on each launch. Re-run `remo devices` if a saved address stops working.
 
@@ -93,61 +94,46 @@ remo screenshot -a $ADDR -o shot.jpg --format jpeg --quality 0.9
 ```
 
 - screenshot output is written directly to the requested path
-- the USB flag for this command is `-D, --device`, not lowercase `-d`
+- this calls the standard CDP `Page.captureScreenshot` method directly, not a custom capability
 
-### `remo mirror`
+### `remo call` result shape
 
-```bash
-remo mirror -a $ADDR --web
-remo mirror -a $ADDR --save out.mp4
-remo mirror -a $ADDR --web --save out.mp4
-```
+`remo call`'s printed JSON is the capability's own result directly — there is no `.data` (or
+`.result`) wrapper around it anymore. A capability that used to answer `{"data": {"status": "ok"}}`
+now answers `{"status": "ok"}`.
 
-- at least one output mode is required
-- `--web` opens the browser player
-- `--save <path>` writes fragmented MP4 to disk
-- the session runs until `Ctrl+C`
+## What moved
 
-#### `mirror --save` lifecycle
-
-1. the CLI sends `__start_mirror`
-2. the output file is created immediately
-3. frames are written incrementally
-4. `Ctrl+C` triggers `__stop_mirror`
-5. the writer finishes on end-of-stream
-6. the CLI flushes and prints `Saved to ...`
-
-Implications:
-
-- choose the file path up front
-- existing files are overwritten
-- clean shutdown matters for finalizing the file
-
-#### Timing caveat
-
-Current MP4 output uses a fixed per-frame duration. Idle periods can be compressed, so saved videos may be shorter than wall-clock time.
-
-Use `remo mirror --save` for debugging and quick animation review. Prefer `xcrun simctl io ... recordVideo` for timing-accurate simulator recordings.
+- **Dashboard / web mirror player / `remo mirror --web`**: gone. `chrome://inspect`'s own
+  remote-device view already renders a live screencast for any CDP target, and DevTools' own
+  Command Menu has "Capture screenshot" — there's no remaining reason for a bespoke dashboard.
+- **`remo mirror --save` (H.264 recording)**: not yet ported. The high-fidelity mirror is planned
+  to come back as a `Remo.startMirror`/`Remo.stopMirror` CDP extension (tracked separately, not
+  silently dropped) — until it lands, use `xcrun simctl io ... recordVideo` for simulator
+  recordings.
+- **`remo start`/`remo stop`/`remo status` (local daemon)**: gone. There's no connection-pooling
+  daemon anymore; `remo` dials the target directly for each command.
+- **`remo watch` (event stream)**: gone for now. `Remo.capabilitiesChanged` isn't wired up on the
+  server side yet, so there's currently no live event to watch.
+- **`remo list` renamed to `remo capabilities`.**
 
 ## Built-ins
 
-These built-in capabilities are always available:
+These built-in capabilities are always available (invoke with `remo call`, or the dedicated
+`remo tree`/`remo info` commands, which are just `remo call` against these under the hood):
 
 - `__ping`
 - `__list_capabilities`
 - `__view_tree`
-- `__screenshot`
+- `__screenshot` (prefer `remo screenshot` / `Page.captureScreenshot` directly instead)
 - `__device_info`
 - `__app_info`
-- `__start_mirror`
-- `__stop_mirror`
 
 ## Troubleshooting
 
 | Symptom | What to do |
 |---------|------------|
-| `remo devices` shows nothing | Ensure the app is running and `Remo.start()` is on the debug path |
+| `remo devices` shows nothing | Ensure the app is running and the CDP server is enabled on the debug path |
 | Connection refused | Re-run `remo devices` and use the fresh address |
-| Capability not found | Run `remo list -a $ADDR` |
+| Capability not found | Run `remo capabilities -a $ADDR` |
 | Screenshot is black | Bring the simulator to the foreground |
-| Saved mirror video is too short | Use `simctl recordVideo` if timing accuracy matters |

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Rewritten onto real Chrome DevTools Protocol.** `remo-sdk`'s embedded server now speaks CDP
+  (HTTP discovery + WebSocket, `Page`/`DOM`/`CSS`/`Overlay` domains, plus a custom `Remo.*`
+  domain for `Remo.invoke`/`Remo.listCapabilities`) instead of a bespoke length-prefixed RPC
+  protocol. `chrome://inspect`, `remo` (rewritten as a thin CDP client), the new `remo-mcp`
+  agent-facing companion server, or any other CDP client can all drive/inspect the app directly.
+  See `SPEC.md` §13 for the full rationale, the Track A/B compatibility split, and documented
+  non-goals.
+- **`remo` CLI commands**: `list` renamed to `capabilities`; `screenshot` now calls the standard
+  `Page.captureScreenshot` method directly. `remo call`'s printed result is no longer wrapped in
+  a `.data` envelope.
+
+### Removed
+
+- **`remo-desktop`** (device manager, RPC client, web dashboard, fMP4 muxer) and **`remo-daemon`**
+  (connection pooling, HTTP/WebSocket API, event bus) — `chrome://inspect`'s own
+  screencast/screenshot panels and a daemon-free, direct-dial CLI made both unnecessary.
+- **`remo mirror`/`dashboard`/`start`/`stop`/`status`/`watch`** CLI commands, along with the
+  crates above. The high-fidelity H.264 mirror is planned to return as a `Remo.startMirror`
+  CDP extension (tracked separately, not abandoned); `Remo.capabilitiesChanged` (which `watch`
+  relied on) isn't wired up on the CDP path yet.
+
 ## [0.4.4] - 2026-04-19
 
 ### Added

@@ -87,11 +87,22 @@ The SDK starts a TCP server inside the app. Real devices are discovered via USB 
 | `remo-bonjour` | Cross* | Bonjour/mDNS service registration (iOS) and discovery (macOS) | dns-sd C API |
 | `remo-sdk` | iOS | Embedded TCP server + capability registry + built-in capabilities + C ABI FFI layer | remo-protocol, remo-transport, remo-objc, remo-bonjour, base64, dashmap |
 | `remo-objc` | iOS* | ObjC runtime bridge: view tree, screenshot, device/app info, GCD main-thread dispatch | objc2, objc2-foundation, objc2-ui-kit |
-| `remo-desktop` | macOS | Device manager, RPC client, web dashboard, fMP4 muxer, stream receiver | remo-protocol, remo-transport, remo-usbmuxd, remo-bonjour, axum |
-| `remo-daemon` | macOS | Background daemon: device connection pool, HTTP/WebSocket API, event bus | remo-desktop, remo-protocol, axum, tokio |
-| `remo-cli` | macOS | CLI tool: `devices`, `dashboard`, `call`, `list`, `watch`, `tree`, `screenshot`, `info`, `mirror`, `start`, `stop`, `status` | remo-desktop, remo-daemon, clap, base64 |
+| `remo-cdp` | Cross | Real Chrome DevTools Protocol: HTTP discovery, WS transport/dispatcher, `Page`/`DOM`/`CSS`/`Overlay` domains, the custom `Remo.*` domain, dual-stack accept helper | axum, hyper, chromiumoxide_cdp, remo-objc |
+| `remo-cli` | macOS | Thin CDP client: `devices`, `capabilities`, `call`, `tree`, `screenshot`, `info` | remo-usbmuxd, remo-bonjour, tokio-tungstenite, clap |
+| `remo-mcp` | macOS | Agent-facing MCP companion server: `list_capabilities`/`invoke_capability`/`get_view_tree`, proxying to the `Remo.*` CDP domain | rmcp, tokio-tungstenite |
 
 *`remo-objc` compiles on all platforms with stubs; real UIKit access requires the `uikit` feature and an Apple target.
+
+> **This document predates the CDP rewrite and is only partially updated.** `remo-desktop`
+> (device manager, RPC client, web dashboard, fMP4 muxer) and `remo-daemon` (connection pool,
+> HTTP/WebSocket API, event bus) described elsewhere in this file (§3 Wire protocol, §6 macOS
+> desktop, the milestone/roadmap tables) **have been deleted**. `remo-sdk` now speaks real CDP
+> through `remo-cdp` instead of the length-prefixed protocol §3 describes — see
+> `crates/remo-cdp`'s module docs and `crates/remo-sdk/src/server.rs` for the current wire
+> behavior. Sections below that still describe the deleted subsystems are kept for historical
+> context, not as current documentation; treat any conflict between this file and the code as
+> the code being right. See "13. CDP rewrite (current architecture)" at the end of this file for
+> what actually replaced them.
 
 ### 2.3 Swift layer
 
@@ -781,3 +792,65 @@ remo/
 - Implement T-015 (handshake/protocol versioning)
 - View property modification (T-016)
 - Audit T-014 (thread safety)
+
+---
+
+## 13. CDP rewrite (current architecture)
+
+Everything above §12 describes Remo before its rewrite onto real Chrome DevTools Protocol. This
+section is the accurate, current picture; treat it as authoritative over any conflicting text
+earlier in this file. The full rationale and phasing lived in a planning doc during the rewrite
+(not checked in as a permanent artifact) — this section is what actually shipped.
+
+### 13.1 Why
+
+Remo's custom length-prefixed RPC protocol required a bespoke client for every use: a CLI, a
+daemon, a dashboard. Real CDP is a protocol every browser devtools frontend, `chromiumoxide`,
+Playwright, and countless agent scripts already speak. Rewriting onto it means any CDP-speaking
+tool can drive/inspect the app with zero custom client software — and it deletes an entire
+category of client-side code (`remo-desktop`'s dashboard/web player, `remo-daemon`'s connection
+pooling) that a fixed, already-adopted protocol makes redundant.
+
+### 13.2 Two tracks — do not conflate
+
+- **Track A — raw wire compatibility.** A custom `Remo.*` CDP domain (`crates/remo-cdp/src/domain_remo.rs`)
+  exposes the actual product: `Remo.invoke` (call a named, developer-registered capability) and
+  `Remo.listCapabilities`. Legal CDP — the wire format is JSON-RPC-shaped method dispatch, and
+  nothing in the protocol whitelists domain names — but Chrome's own frontend won't render a
+  panel for it, which doesn't matter to a client (the CLI, `remo-mcp`, an agent script) that was
+  never going to use Chrome's UI for this surface.
+- **Track B — real Chrome DevTools frontend compatibility.** Standard domains (`Page`, `DOM`,
+  `CSS`, `Overlay` in `crates/remo-cdp/src/domain_page.rs`/`domain_dom.rs`) answer real Chrome
+  DevTools' bootstrap sequence with correctly-shaped replies, so `chrome://inspect` renders
+  Elements/Console/screencast against the app with zero console errors. This is what let
+  `remo-desktop`'s dashboard be deleted rather than ported — DevTools' own UI covers the same
+  ground.
+
+### 13.3 Non-goals (v1)
+
+- **DOM tree is a snapshot, not live.** `DOM.getDocument`/`requestChildNodes` walk the UIView
+  hierarchy on demand; there are no `DOM.childNodeInserted`-style mutation events. Refresh to see
+  updates.
+- **CSS is read-only, geometry-derived.** Frame → `left`/`top`/`width`/`height`, alpha →
+  `opacity`, etc. `CSS.setStyleTexts` and friends have nothing honest to back them — UIKit has no
+  cascade, stylesheets, or `display`/`position` model.
+- **`Remo.capabilitiesChanged` isn't wired up.** `RemoDomain::respond` doesn't forward the
+  registry's event bus through its `EventSink` yet — no CDP client can currently observe a live
+  capability registration. (`remo watch`, which relied on this over the old wire, was removed
+  with it.)
+- **The high-fidelity H.264 mirror has no CDP path yet.** `Page.startScreencast` (baseline JPEG,
+  works with any generic CDP client and `chrome://inspect`'s own screencast panel) is implemented.
+  The old `__start_mirror`/`__stop_mirror` H.264 pipeline (`crates/remo-sdk/src/streaming.rs`) is
+  kept, unwired, as the basis for a planned `Remo.startMirror`/`Remo.stopMirror` extension —
+  dropping it outright would be a real fidelity regression versus what Remo did before the
+  rewrite, so it's parked, not deleted.
+
+### 13.4 What deleted, what replaced it
+
+| Deleted | Replaced by |
+|---|---|
+| `remo-desktop` (device manager, RPC client, web dashboard, fMP4 muxer) | `chrome://inspect`'s own screencast/screenshot panels; `crates/remo-cli/src/cdp_client.rs` for programmatic device resolution |
+| `remo-daemon` (connection pool, HTTP/WS API, event bus) | Direct-dial CDP from the CLI/MCP server per call — no daemon in front of it |
+| Length-prefixed `remo-protocol` wire (as the *only* protocol) | `crates/remo-cdp`'s CDP-over-WebSocket, described in §3 for historical reference only |
+| `remo list`, `remo dashboard`, `remo mirror`, `remo start`/`stop`/`status`, `remo watch` | `remo capabilities`; deleted (see 13.3); deleted, pending `Remo.startMirror`; deleted (no daemon); deleted (no event wiring yet) |
+| Agent access via a repurposed browser-automation MCP server | `remo-mcp`, a purpose-built companion exposing `list_capabilities`/`invoke_capability`/`get_view_tree` directly over the `Remo.*` domain |
