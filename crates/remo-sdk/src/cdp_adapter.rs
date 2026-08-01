@@ -27,16 +27,16 @@ impl CapabilityInvoker for RegistryInvoker {
         let result = self.0.invoke(name, params).await?;
         Some(match result {
             Ok(HandlerOutput::Json(value)) => Ok(value),
-            // Deliberate scope decision, not a silent gap: no example or
-            // built-in capability other than `__screenshot` returns binary
-            // data, and that one already has a first-class CDP replacement
-            // (`Page.captureScreenshot`, see `remo-cdp`'s `domain_page`).
-            // Shoehorning binary bytes through a JSON-typed `Remo.invoke`
-            // result isn't worth the complexity until something concrete
-            // actually needs it.
+            // Deliberate scope decision, not a silent gap: no built-in
+            // capability returns binary data anymore (the one that used to,
+            // `__screenshot`, was removed once `Page.captureScreenshot` —
+            // see `remo-cdp`'s `domain_page` — made it a redundant Track-A
+            // duplicate of Track B). Shoehorning binary bytes through a
+            // JSON-typed `Remo.invoke` result isn't worth the complexity
+            // until some concrete future capability actually needs it.
             Ok(HandlerOutput::Binary { .. }) => Err(
                 "this capability returns binary data, which Remo.invoke does not carry — \
-                 use a dedicated CDP method (e.g. Page.captureScreenshot for __screenshot) instead"
+                 expose it as a dedicated CDP method instead (see Page.captureScreenshot)"
                     .to_string(),
             ),
             Err(HandlerError::InvalidParams(message)) => Err(format!("invalid params: {message}")),

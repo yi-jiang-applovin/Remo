@@ -158,7 +158,17 @@ fn register_builtins(registry: &CapabilityRegistry) {
 
     registry.register_sync("__ping", |_| Ok(serde_json::json!({"pong": true})));
 
-    // The four capabilities below all call into UIKit/ObjC via
+    // `__view_tree`/`__screenshot` used to live here, duplicating what real
+    // CDP already provides better: `DOM.getDocument` backs the actual
+    // Elements panel (live, inspectable, highlightable — not a JSON dump),
+    // and `Page.captureScreenshot` is what `remo screenshot`/`remo-mcp`
+    // already call directly (see `remo-cdp`'s `domain_dom`/`domain_page`).
+    // Keeping a Track-A capability that re-derives the same
+    // `remo_objc::snapshot_view_tree()`/`capture_screenshot()` data was
+    // redundant once Track B existed — removed rather than carried forward
+    // unexamined.
+    //
+    // The two capabilities below still call into UIKit/ObjC via
     // `remo_objc::run_on_main_sync`, which blocks the calling thread until
     // the main thread services it. `register_sync`'s closures run wherever
     // `registry.invoke()` happens to be awaited from — today that is a
@@ -170,70 +180,6 @@ fn register_builtins(registry: &CapabilityRegistry) {
     // form) plus `spawn_blocking` moves that wait onto tokio's dedicated
     // blocking-thread pool instead, so worker threads stay free regardless
     // of how many of these are in flight at once.
-    registry.register("__view_tree", |params| async move {
-        let depth: Option<usize> = params
-            .get("max_depth")
-            .and_then(serde_json::Value::as_u64)
-            .map(|d| d as usize);
-
-        let tree = tokio::task::spawn_blocking(move || {
-            remo_objc::run_on_main_sync(|| {
-                // SAFETY: run_on_main_sync ensures main-thread execution.
-                let full_tree = unsafe { remo_objc::snapshot_view_tree() };
-                full_tree.map(|t| {
-                    if let Some(max) = depth {
-                        truncate_tree(t, max, 0)
-                    } else {
-                        t
-                    }
-                })
-            })
-        })
-        .await
-        .unwrap_or_default();
-
-        Ok(crate::registry::HandlerOutput::Json(
-            serde_json::to_value(tree).unwrap_or_default(),
-        ))
-    });
-
-    registry.register("__screenshot", |params| async move {
-        let format = params
-            .get("format")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("jpeg")
-            .to_string();
-        let quality = params
-            .get("quality")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.8);
-
-        let result = tokio::task::spawn_blocking(move || {
-            remo_objc::run_on_main_sync(|| {
-                // SAFETY: run_on_main_sync ensures main-thread execution.
-                unsafe { remo_objc::capture_screenshot(&format, quality) }
-            })
-        })
-        .await
-        .unwrap_or_default();
-
-        match result {
-            Some(sr) => Ok(crate::registry::HandlerOutput::Binary {
-                metadata: serde_json::json!({
-                    "format": sr.format,
-                    "width": sr.width,
-                    "height": sr.height,
-                    "scale": sr.scale,
-                    "size": sr.bytes.len(),
-                }),
-                data: sr.bytes,
-            }),
-            None => Err(crate::registry::HandlerError::Internal(
-                "screenshot capture failed".into(),
-            )),
-        }
-    });
-
     registry.register("__device_info", |_| async move {
         let info = tokio::task::spawn_blocking(|| {
             remo_objc::run_on_main_sync(|| {
@@ -261,29 +207,4 @@ fn register_builtins(registry: &CapabilityRegistry) {
             serde_json::to_value(info).unwrap_or_default(),
         ))
     });
-}
-
-fn truncate_tree(
-    mut node: remo_objc::ViewNode,
-    max_depth: usize,
-    current: usize,
-) -> remo_objc::ViewNode {
-    if current >= max_depth {
-        let count = count_descendants(&node);
-        node.children.clear();
-        if count > 0 {
-            node.class_name = format!("{} (+{count} children)", node.class_name);
-        }
-    } else {
-        node.children = node
-            .children
-            .into_iter()
-            .map(|c| truncate_tree(c, max_depth, current + 1))
-            .collect();
-    }
-    node
-}
-
-fn count_descendants(node: &remo_objc::ViewNode) -> usize {
-    node.children.len() + node.children.iter().map(count_descendants).sum::<usize>()
 }

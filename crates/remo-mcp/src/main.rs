@@ -1,17 +1,25 @@
 //! `remo-mcp` — the agent-facing companion to the thin CLI (Phase 2 of the
-//! CDP rewrite plan). Exposes exactly three MCP tools, each a thin proxy
-//! onto the `Remo.*` CDP domain implemented in `remo-cdp`:
+//! CDP rewrite plan). Exposes exactly two MCP tools, each a thin proxy onto
+//! the `Remo.*` CDP domain implemented in `remo-cdp`:
 //!
 //! - `list_capabilities`  -> `Remo.listCapabilities`
 //! - `invoke_capability`  -> `Remo.invoke` with `{"name", "args"}`
-//! - `get_view_tree`      -> `Remo.invoke` with `{"name": "__view_tree", "args": {...}}`
 //!
-//! This crate deliberately knows nothing about capability semantics, view
-//! trees, or app state — it only knows how to dial a `ws://` URL, send one
-//! CDP request, and hand back the JSON result or a clear tool error. All
-//! business logic (the capability registry, `__view_tree`'s own shape,
-//! bootstrap-shape quirks) lives in `remo-sdk`/`remo-cdp`, which this crate
-//! does not depend on and must not reimplement.
+//! There used to be a third, `get_view_tree` (`Remo.invoke` with the
+//! now-removed `__view_tree` built-in) — dropped because it duplicated what
+//! real CDP already does better: `DOM.getDocument` backs the actual Elements
+//! panel (live, inspectable, highlightable), not a static JSON dump of the
+//! same `remo_objc::snapshot_view_tree()` data under a different name. An
+//! agent that needs the view hierarchy should drive `chrome://inspect`/a
+//! `devtools://` URL directly (any browser-automation tool already does
+//! this), not go through this proxy.
+//!
+//! This crate deliberately knows nothing about capability semantics or app
+//! state — it only knows how to dial a `ws://` URL, send one CDP request,
+//! and hand back the JSON result or a clear tool error. All business logic
+//! (the capability registry, bootstrap-shape quirks) lives in
+//! `remo-sdk`/`remo-cdp`, which this crate does not depend on and must not
+//! reimplement.
 //!
 //! # Why a fresh WebSocket connection per call
 //!
@@ -72,13 +80,6 @@ struct InvokeCapabilityRequest {
 
 fn empty_object() -> Value {
     json!({})
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct GetViewTreeRequest {
-    /// Optional cap on how many levels deep to walk the view tree.
-    /// Omit for the capability's own default depth.
-    max_depth: Option<u32>,
 }
 
 /// Sends one `{"id","method","params"}` request over a freshly dialed
@@ -165,26 +166,6 @@ impl RemoMcp {
         .await?;
         Ok(result.to_string())
     }
-
-    #[tool(
-        description = "Fetch the connected Remo target's current view tree (proxies Remo.invoke with the built-in __view_tree capability). max_depth optionally caps how many levels deep to walk."
-    )]
-    async fn get_view_tree(
-        &self,
-        Parameters(GetViewTreeRequest { max_depth }): Parameters<GetViewTreeRequest>,
-    ) -> Result<String, String> {
-        let args = match max_depth {
-            Some(max_depth) => json!({ "max_depth": max_depth }),
-            None => json!({}),
-        };
-        let result = call_remo(
-            &self.ws_url,
-            "Remo.invoke",
-            json!({ "name": "__view_tree", "args": args }),
-        )
-        .await?;
-        Ok(result.to_string())
-    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -193,8 +174,9 @@ impl ServerHandler for RemoMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             format!(
                 "Thin proxy onto a Remo CDP target at {}. Call list_capabilities to discover \
-                 what's invokable, invoke_capability(name, params) to run one, and \
-                 get_view_tree(max_depth?) for the app's current view hierarchy. \
+                 what's invokable and invoke_capability(name, params) to run one. For the \
+                 app's view hierarchy, drive chrome://inspect or a devtools:// URL directly \
+                 (real CDP's DOM.getDocument) rather than this proxy. \
                  Override the target with the REMO_WS_URL env var or a CLI arg.",
                 self.ws_url
             ),

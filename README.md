@@ -179,7 +179,7 @@ remo capabilities -a <addr>                             # inspect registered cap
 remo call -a <addr> myFeature.toggle '{"enabled":true}' # invoke your capability
 ```
 
-For simulator automation, screenshots, recording, and broader inspection, use `xcodebuildmcp` alongside Remo. For agent-facing access, `remo-mcp` exposes the same capability surface as three MCP tools instead of a CLI.
+For simulator automation, screenshots, recording, and broader inspection, use `xcodebuildmcp` alongside Remo. For agent-facing access, `remo-mcp` exposes the same capability surface as two MCP tools instead of a CLI.
 
 ## How It Works
 
@@ -221,13 +221,13 @@ remo devices                              # Auto-discover devices (USB + Bonjour
 remo call -a <addr> <capability> [params] # Invoke a capability (Remo.invoke)
 remo capabilities -a <addr>               # List registered capabilities (Remo.listCapabilities)
 remo screenshot -a <addr> -o out.jpg      # Take a screenshot (Page.captureScreenshot)
-remo tree -a <addr>                       # Dump view hierarchy
 remo info -a <addr>                       # Show device & app info
 ```
 
-There's no `dashboard`/`mirror`/`start`/`stop`/`status`/`watch` command anymore — see
+There's no `dashboard`/`mirror`/`start`/`stop`/`status`/`watch`/`tree` command anymore — see
 [`skills/remo/references/cli.md`](skills/remo/references/cli.md#what-moved) for what replaced
-each one (mostly: `chrome://inspect`'s own panels, or a tracked follow-up).
+each one (mostly: `chrome://inspect`'s own panels — the Elements panel for the view hierarchy,
+its Command Menu for screenshots — or a tracked follow-up).
 
 For a full command guide, see:
 
@@ -242,12 +242,12 @@ These are registered automatically by the SDK — no setup required:
 |------------|-------------|
 | `__ping` | Connectivity check |
 | `__list_capabilities` | List all registered capabilities |
-| `__view_tree` | Snapshot the UIView hierarchy as JSON |
-| `__screenshot` | Capture the screen (JPEG/PNG, configurable quality) |
 | `__device_info` | Device model, OS version, screen dimensions |
 | `__app_info` | Bundle ID, version, build number, display name |
-| `__start_mirror` | Start H.264 screen mirror stream |
-| `__stop_mirror` | Stop mirror stream |
+
+`__view_tree` and `__screenshot` used to live here too — removed once real CDP made them
+redundant Track-A duplicates of Track B: use the Elements panel (`DOM.getDocument`) and
+`Page.captureScreenshot` (what `remo screenshot` already calls) directly instead.
 
 ## Claude Code Skills
 
@@ -308,7 +308,7 @@ cargo build -p remo-cli              # Build the CLI
 | `remo-objc` | ObjC runtime bridge via `objc2` (view tree, device/app info, media hooks) |
 | `remo-cdp` | Real Chrome DevTools Protocol: HTTP discovery, WS dispatcher, `Page`/`DOM`/`CSS`/`Overlay` domains, the custom `Remo.*` domain |
 | `remo-cli` | Thin CDP client CLI |
-| `remo-mcp` | Agent-facing MCP companion server (`list_capabilities`/`invoke_capability`/`get_view_tree`) |
+| `remo-mcp` | Agent-facing MCP companion server (`list_capabilities`/`invoke_capability`) |
 
 ### Project Status
 

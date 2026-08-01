@@ -73,16 +73,6 @@ enum Command {
         timeout: u64,
     },
 
-    /// Dump the view hierarchy tree.
-    Tree {
-        #[command(flatten)]
-        target: Target,
-
-        /// Maximum depth to traverse (omit for full tree).
-        #[arg(short, long)]
-        max_depth: Option<u64>,
-    },
-
     /// Take a screenshot of the device (`Page.captureScreenshot`).
     Screenshot {
         #[command(flatten)]
@@ -125,7 +115,6 @@ async fn main() -> Result<()> {
             params,
             timeout,
         } => cmd_call(&target, &capability, &params, timeout).await?,
-        Command::Tree { target, max_depth } => cmd_tree(&target, max_depth).await?,
         Command::Screenshot {
             target,
             output,
@@ -221,65 +210,6 @@ async fn cmd_call(target: &Target, capability: &str, params: &str, timeout: u64)
     .await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
-}
-
-async fn cmd_tree(target: &Target, max_depth: Option<u64>) -> Result<()> {
-    let mut client = target.dial().await?;
-
-    let mut args = serde_json::json!({});
-    if let Some(d) = max_depth {
-        args["max_depth"] = serde_json::json!(d);
-    }
-
-    let data = cdp_client::with_timeout(
-        Duration::from_secs(10),
-        client.invoke_capability("__view_tree", args),
-    )
-    .await?;
-
-    if data.is_null() {
-        println!("No key window found.");
-    } else {
-        print_tree(&data, 0);
-    }
-
-    Ok(())
-}
-
-fn print_tree(node: &serde_json::Value, indent: usize) {
-    let prefix = "  ".repeat(indent);
-    let class = node["class_name"].as_str().unwrap_or("?");
-    let frame = &node["frame"];
-    let x = frame["x"].as_f64().unwrap_or(0.0);
-    let y = frame["y"].as_f64().unwrap_or(0.0);
-    let w = frame["width"].as_f64().unwrap_or(0.0);
-    let h = frame["height"].as_f64().unwrap_or(0.0);
-
-    let mut extras = Vec::new();
-    if node["is_hidden"].as_bool() == Some(true) {
-        extras.push("hidden".to_string());
-    }
-    let alpha = node["alpha"].as_f64().unwrap_or(1.0);
-    if alpha < 1.0 {
-        extras.push(format!("alpha={alpha:.1}"));
-    }
-    if let Some(aid) = node["accessibility_id"].as_str() {
-        extras.push(format!("id=\"{aid}\""));
-    }
-
-    let extra_str = if extras.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", extras.join(", "))
-    };
-
-    println!("{prefix}{class} ({x:.0}, {y:.0}, {w:.0}x{h:.0}){extra_str}");
-
-    if let Some(children) = node["children"].as_array() {
-        for child in children {
-            print_tree(child, indent + 1);
-        }
-    }
 }
 
 async fn cmd_screenshot(target: &Target, output: &str, format: &str, quality: f64) -> Result<()> {

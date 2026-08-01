@@ -89,7 +89,7 @@ The SDK starts a TCP server inside the app. Real devices are discovered via USB 
 | `remo-objc` | iOS* | ObjC runtime bridge: view tree, screenshot, device/app info, GCD main-thread dispatch | objc2, objc2-foundation, objc2-ui-kit |
 | `remo-cdp` | Cross | Real Chrome DevTools Protocol: HTTP discovery, WS transport/dispatcher, `Page`/`DOM`/`CSS`/`Overlay` domains, the custom `Remo.*` domain, dual-stack accept helper | axum, hyper, chromiumoxide_cdp, remo-objc |
 | `remo-cli` | macOS | Thin CDP client: `devices`, `capabilities`, `call`, `tree`, `screenshot`, `info` | remo-usbmuxd, remo-bonjour, tokio-tungstenite, clap |
-| `remo-mcp` | macOS | Agent-facing MCP companion server: `list_capabilities`/`invoke_capability`/`get_view_tree`, proxying to the `Remo.*` CDP domain | rmcp, tokio-tungstenite |
+| `remo-mcp` | macOS | Agent-facing MCP companion server: `list_capabilities`/`invoke_capability`, proxying to the `Remo.*` CDP domain | rmcp, tokio-tungstenite |
 
 *`remo-objc` compiles on all platforms with stubs; real UIKit access requires the `uikit` feature and an Apple target.
 
@@ -826,6 +826,16 @@ pooling) that a fixed, already-adopted protocol makes redundant.
   `remo-desktop`'s dashboard be deleted rather than ported — DevTools' own UI covers the same
   ground.
 
+The two tracks meet in one deliberate place: `domain_remo.rs` also claims `Runtime.evaluate`/
+`Runtime.getProperties` — the methods behind whatever you type into DevTools' real Console panel
+— and recognizes a small grammar (`remo`, `remo.<dotted.name>`, `remo.<dotted.name>({...})`).
+A capability's own dots (already Remo's naming convention — `grid.tab.select`) become real
+object nesting: bare `remo` is a self-describing, `objectId`-bearing `RemoteObject` whose
+children are computed fresh from the live capability list on every call, so DevTools' own
+expand-arrow and Tab-completion work against it with no separate `listCapabilities()`-style
+indirection. This closes Track A's own zero-install gap without a bespoke second UI — considered
+and rejected in favor of this, since it needs nothing beyond Chrome itself, exactly like Track B.
+
 ### 13.3 Non-goals (v1)
 
 - **DOM tree is a snapshot, not live.** `DOM.getDocument`/`requestChildNodes` walk the UIView
@@ -853,4 +863,7 @@ pooling) that a fixed, already-adopted protocol makes redundant.
 | `remo-daemon` (connection pool, HTTP/WS API, event bus) | Direct-dial CDP from the CLI/MCP server per call — no daemon in front of it |
 | Length-prefixed `remo-protocol` wire (as the *only* protocol) | `crates/remo-cdp`'s CDP-over-WebSocket, described in §3 for historical reference only |
 | `remo list`, `remo dashboard`, `remo mirror`, `remo start`/`stop`/`status`, `remo watch` | `remo capabilities`; deleted (see 13.3); deleted, pending `Remo.startMirror`; deleted (no daemon); deleted (no event wiring yet) |
-| Agent access via a repurposed browser-automation MCP server | `remo-mcp`, a purpose-built companion exposing `list_capabilities`/`invoke_capability`/`get_view_tree` directly over the `Remo.*` domain |
+| Agent access via a repurposed browser-automation MCP server | `remo-mcp`, a purpose-built companion exposing `list_capabilities`/`invoke_capability` directly over the `Remo.*` domain |
+| `remo tree` / the `__view_tree` built-in capability | Real CDP `DOM.getDocument` — the actual Elements panel, live and inspectable, not a JSON dump of the same `remo_objc::snapshot_view_tree()` data under a different name |
+| The `__screenshot` built-in capability | `Page.captureScreenshot` — what `remo screenshot` already called directly since Phase 2; the capability was a redundant second path to the same `remo_objc::capture_screenshot()` |
+| `Remo.invoke` reachable only via `remo-cli`/`remo-mcp`/a hand-rolled WebSocket client | `crates/remo-cdp/src/domain_remo.rs` also claims `Runtime.evaluate`/`Runtime.getProperties`, so real Chrome DevTools' own Console panel can call `remo.<dotted.name>({...})` directly — a capability's own dots become real object nesting, with live, schema-driven Tab-completion (see the module's doc comment for the full design) |

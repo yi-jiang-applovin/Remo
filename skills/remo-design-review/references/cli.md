@@ -57,7 +57,6 @@ remo -vvv <command>
 | `remo devices` | Discover simulators (Bonjour) and devices (USB), resolved to dialable `ws://` CDP URLs | `remo devices` |
 | `remo call` | Invoke a capability (`Remo.invoke`) | `remo call -a $ADDR "__ping" '{}'` |
 | `remo capabilities` | List registered capabilities (`Remo.listCapabilities`) | `remo capabilities -a $ADDR` |
-| `remo tree` | Dump the view hierarchy | `remo tree -a $ADDR -m 4` |
 | `remo screenshot` | Save a screenshot (`Page.captureScreenshot`) | `remo screenshot -a $ADDR -o shot.jpg` |
 | `remo info` | Print device and app metadata | `remo info -a $ADDR` |
 
@@ -80,8 +79,11 @@ Use these commands in order:
 remo devices
 remo call -a <ADDRESS> "__ping" '{}'
 remo screenshot -a <ADDRESS> -o /tmp/remo-verify.jpg
-remo tree -a <ADDRESS>
 ```
+
+For a structural (view hierarchy) check, there's no `remo tree` command — open `chrome://inspect`
+or a `devtools://` URL against `<ADDRESS>` and use the real Elements panel instead (see "What
+moved" below).
 
 ## Command Notes
 
@@ -116,18 +118,31 @@ now answers `{"status": "ok"}`.
 - **`remo watch` (event stream)**: gone for now. `Remo.capabilitiesChanged` isn't wired up on the
   server side yet, so there's currently no live event to watch.
 - **`remo list` renamed to `remo capabilities`.**
+- **`remo tree` (view hierarchy dump) and the `__view_tree`/`__screenshot` built-in capabilities
+  it (and the old `__screenshot`) called**: removed. Both duplicated what real CDP already does
+  better — `DOM.getDocument` backs the actual, live, inspectable/highlightable Elements panel, and
+  `Page.captureScreenshot` is what `remo screenshot` already calls directly. Open
+  `chrome://inspect` or a `devtools://` URL against the target instead of `remo tree`.
 
 ## Built-ins
 
 These built-in capabilities are always available (invoke with `remo call`, or the dedicated
-`remo tree`/`remo info` commands, which are just `remo call` against these under the hood):
+`remo info` command, which is just `remo call` against two of them under the hood):
 
 - `__ping`
 - `__list_capabilities`
-- `__view_tree`
-- `__screenshot` (prefer `remo screenshot` / `Page.captureScreenshot` directly instead)
 - `__device_info`
 - `__app_info`
+
+## Calling capabilities from the real Console panel (no CLI needed)
+
+Any Remo target's real Chrome DevTools Console (`chrome://inspect`/a `devtools://` URL) can call
+`Remo.invoke` directly — no `remo call`, no CLI at all. Type `remo` alone to see a self-describing
+preview of every registered capability (grouped by namespace, e.g. `{grid: {…}, ping: ƒ}`); a
+capability's own dots become real object nesting, so `grid.tab.select` is called as
+`remo.grid.tab.select({"id": "feed"})`. Tab-completion works — typing `remo.` suggests real,
+currently-registered names, not guesses. This is the same underlying mechanism `remo call` uses
+(`Remo.invoke`), just reachable without installing anything.
 
 ## Troubleshooting
 
