@@ -14,24 +14,27 @@
 //!
 //! ## Why `main()` isn't `#[tokio::main]`
 //!
-//! `remo_objc::run_on_main_sync` (used by `domain_dom`/`domain_page` to reach
-//! UIKit) dispatches via GCD's real `dispatch_sync_f(dispatch_get_main_queue(), ...)`
-//! on *any* Apple target — including bare macOS, not just behind the `uikit`
-//! feature — so it applies here too. That call blocks until something drains
-//! the main dispatch queue. Inside a real iOS app, `UIApplicationMain`'s run
-//! loop does that as a side effect of normal event handling. A bare
-//! `#[tokio::main]` binary has nothing doing that: tokio's executor owns the
-//! main thread instead, and `DOM.getDocument`/`Page.captureScreenshot` hang
-//! forever waiting for a main queue nobody is servicing — confirmed by
-//! actually running this and watching it hang, not a theoretical concern.
+//! Originally (Phase 0): `remo_objc::run_on_main_sync` dispatched via GCD's real
+//! `dispatch_sync_f(dispatch_get_main_queue(), ...)` on *any* Apple target — including bare
+//! macOS, not just behind the `uikit` feature — so a bare `#[tokio::main]` binary (tokio's
+//! executor owns the main thread; nothing drains libdispatch's main queue) made
+//! `DOM.getDocument`/`Page.captureScreenshot` hang forever. Confirmed by actually running it and
+//! watching it hang, not a theoretical concern — hence the `dispatch_main()` workaround below.
 //!
-//! The fix for *this standalone binary* (not for the domains — their
-//! `run_on_main_sync` usage is exactly correct for a real app process) is to
-//! give the real OS main thread a GCD run loop: the server runs on a
-//! spawned background thread with its own Tokio runtime, and the actual
-//! `main()` thread calls `dispatch_main()`, which parks it while
-//! continuously draining the main queue — precisely what a real app's main
-//! thread already does for free.
+//! That root cause has since been fixed at the source (Phase 1 of the rewrite): `run_on_main_sync`
+//! now only takes the real GCD path behind `all(target_vendor = "apple", feature = "uikit")`,
+//! matching every other `remo-objc` module — this crate's own default build (no `--features ios`,
+//! the invocation this doc comment tells you to run) takes the direct-call stub instead, which
+//! needs no run loop at all. Verified empirically post-fix: `Page.captureScreenshot` against this
+//! exact binary now returns immediately (a stub "capture failed", not a hang) with no
+//! `dispatch_main()` in the picture.
+//!
+//! The `std::thread::spawn` + `dispatch_main()` structure below is kept anyway, even though it's
+//! no longer load-bearing for this example's own default invocation, because it's still the
+//! correct pattern to demonstrate for anyone adapting this into a *real* UIKit-touching standalone
+//! binary (`--features ios`, run as a GUI app with an Info.plist) — a real iOS app doesn't need it
+//! at all, since `UIApplicationMain`'s own run loop services the main queue for free, but a bare
+//! macOS binary that does turn `uikit` on would hit the original Phase 0 hang again without it.
 
 use std::sync::Arc;
 
