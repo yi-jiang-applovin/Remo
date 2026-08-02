@@ -677,10 +677,7 @@ fn cap_display_length(s: &str, max_chars: usize) -> String {
 fn unwrap_modified_content(type_str: &str) -> (String, Vec<String>) {
     let mut current = type_str.trim().to_string();
     let mut modifiers = Vec::new();
-    loop {
-        let Some((name, mut args)) = parse_outer_generic(&current) else {
-            break;
-        };
+    while let Some((name, mut args)) = parse_outer_generic(&current) {
         if !is_modified_content(name) || args.len() != 2 {
             break;
         }
