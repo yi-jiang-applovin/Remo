@@ -17,6 +17,7 @@ async fn build_cdp_app(registry: CapabilityRegistry) -> axum::Router {
         dispatcher.register(Arc::new(crate::cdp_adapter::remo_domain(registry.clone())));
         dispatcher.register(Arc::new(remo_cdp::domain_page::PageDomain::new()));
         dispatcher.register(Arc::new(remo_cdp::domain_dom::DomDomain::new()));
+        dispatcher.register(Arc::new(remo_cdp::domain_storage::StorageDomain::new()));
         dispatcher
     });
     axum::Router::new()
@@ -335,6 +336,114 @@ fn register_storage_debugging(registry: &CapabilityRegistry) {
         .map_err(crate::registry::HandlerError::InvalidParams)?;
         Ok(crate::registry::HandlerOutput::Json(
             serde_json::json!({ "path": path, "deleted": true }),
+        ))
+    });
+
+    // Keychain has no bulk-read call and each op is real Security.framework
+    // I/O (a keychain daemon round-trip, not an in-process FFI call like
+    // NSUserDefaults) — spawn_blocking for the same reason as filesystem/
+    // sqlite above, not because of any main-thread requirement.
+    registry.register("keychain.list", |_| async move {
+        let items = tokio::task::spawn_blocking(remo_objc::list_keychain_items)
+            .await
+            .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+            .map_err(crate::registry::HandlerError::Internal)?;
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::Value::Array(items),
+        ))
+    });
+
+    registry.register("keychain.get", |params| async move {
+        let service = params
+            .get("service")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"service\"".into())
+            })?
+            .to_string();
+        let account = params
+            .get("account")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"account\"".into())
+            })?
+            .to_string();
+        let value = tokio::task::spawn_blocking({
+            let service = service.clone();
+            let account = account.clone();
+            move || remo_objc::get_keychain_item(&service, &account)
+        })
+        .await
+        .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+        .map_err(crate::registry::HandlerError::Internal)?;
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "service": service, "account": account, "value": value }),
+        ))
+    });
+
+    registry.register("keychain.set", |params| async move {
+        let service = params
+            .get("service")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"service\"".into())
+            })?
+            .to_string();
+        let account = params
+            .get("account")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"account\"".into())
+            })?
+            .to_string();
+        let password = params
+            .get("password")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams(
+                    "requires a string \"password\"".into(),
+                )
+            })?
+            .to_string();
+        tokio::task::spawn_blocking({
+            let service = service.clone();
+            let account = account.clone();
+            let password = password.clone();
+            move || remo_objc::set_keychain_item(&service, &account, &password)
+        })
+        .await
+        .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+        .map_err(crate::registry::HandlerError::Internal)?;
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "service": service, "account": account }),
+        ))
+    });
+
+    registry.register("keychain.delete", |params| async move {
+        let service = params
+            .get("service")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"service\"".into())
+            })?
+            .to_string();
+        let account = params
+            .get("account")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                crate::registry::HandlerError::InvalidParams("requires a string \"account\"".into())
+            })?
+            .to_string();
+        tokio::task::spawn_blocking({
+            let service = service.clone();
+            let account = account.clone();
+            move || remo_objc::delete_keychain_item(&service, &account)
+        })
+        .await
+        .map_err(|e| crate::registry::HandlerError::Internal(e.to_string()))?
+        .map_err(crate::registry::HandlerError::Internal)?;
+        Ok(crate::registry::HandlerOutput::Json(
+            serde_json::json!({ "service": service, "account": account, "deleted": true }),
         ))
     });
 

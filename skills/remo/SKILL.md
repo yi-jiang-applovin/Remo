@@ -56,8 +56,10 @@ Before making changes, capture the current screen and any supporting state that 
 Typical baseline evidence:
 
 - screenshot
-- the Elements panel's view hierarchy (`chrome://inspect`/a `devtools://` URL — there's no
-  `remo tree` command; this is real CDP `DOM.getDocument`)
+- the Elements panel's view hierarchy — open with
+  `open -a "Google Chrome" "devtools://devtools/bundled/inspector.html?ws=<addr>/devtools/page/1"`
+  (see `references/cli.md`'s "Opening DevTools Directly" — no `chrome://inspect` manual config
+  step needed); there's no `remo tree` command, this is real CDP `DOM.getDocument`
 - capability output for relevant internal state
 
 Add a short observation describing what is wrong or what you expect to change.

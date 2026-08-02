@@ -71,6 +71,26 @@ Every command takes one of these:
 
 Simulator addresses can change on each launch. Re-run `remo devices` if a saved address stops working.
 
+## Opening DevTools Directly (skip `chrome://inspect`'s manual step)
+
+`chrome://inspect` normally requires a one-time "Configure..." step to add the target's
+`host:port` before it shows up in the Remote Target list. Skip that entirely with a plain shell
+command — no browser-automation tool needed, this is just launching Chrome with a URL argument:
+
+```bash
+open -a "Google Chrome" "devtools://devtools/bundled/inspector.html?ws=<ADDRESS>/devtools/page/1"
+```
+
+- `<ADDRESS>` is the same `host:port` `remo devices`/`-a` uses (e.g. `127.0.0.1:59761`).
+- The `-a "Google Chrome"` is required — a bare `open "devtools://..."` fails with
+  `kLSApplicationNotFoundErr`, because macOS has no system-wide URL-scheme handler registered for
+  `devtools://`. Chrome only resolves the scheme when launched directly with the URL as an
+  argument, not via LaunchServices' generic scheme dispatch.
+- Every mention below of "open `chrome://inspect` or a `devtools://` URL" means this command —
+  `chrome://inspect`'s manual per-launch "Configure" step is never actually required.
+- The address changes on every simulator launch (random port), so re-run this with the fresh
+  `<ADDRESS>` each time rather than reusing an old URL.
+
 ## Setup Verification Sequence
 
 Use these commands in order:
@@ -81,9 +101,9 @@ remo call -a <ADDRESS> "__ping" '{}'
 remo screenshot -a <ADDRESS> -o /tmp/remo-verify.jpg
 ```
 
-For a structural (view hierarchy) check, there's no `remo tree` command — open `chrome://inspect`
-or a `devtools://` URL against `<ADDRESS>` and use the real Elements panel instead (see "What
-moved" below).
+For a structural (view hierarchy) check, there's no `remo tree` command — open the `devtools://`
+URL above (or `chrome://inspect`) against `<ADDRESS>` and use the real Elements panel instead (see
+"What moved" below).
 
 ## Command Notes
 
@@ -143,7 +163,8 @@ These built-in capabilities are always available (invoke with `remo call`, or th
 
 ## Calling capabilities from the real Console panel (no CLI needed)
 
-Any Remo target's real Chrome DevTools Console (`chrome://inspect`/a `devtools://` URL) can call
+Any Remo target's real Chrome DevTools Console (open via the `devtools://` command above, or
+`chrome://inspect`) can call
 `Remo.invoke` directly — no `remo call`, no CLI at all. Type `remo` alone to see a self-describing
 preview of every registered capability (grouped by namespace, e.g. `{grid: {…}, ping: ƒ}`); a
 capability's own dots become real object nesting, so `grid.tab.select` is called as

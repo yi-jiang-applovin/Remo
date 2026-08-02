@@ -19,12 +19,15 @@
 //!   `Emulation` — Track B (real Chrome DevTools frontend compatibility).
 //! - [`domain_dom`] — `DOM`/`CSS`/`Overlay`: the UIView tree as an Elements
 //!   panel.
+//! - [`domain_storage`] — `DOMStorage`/`Storage`: `NSUserDefaults` as the
+//!   Application panel's Local Storage table.
 
 pub mod discovery;
 pub mod dispatcher;
 pub mod domain_dom;
 pub mod domain_page;
 pub mod domain_remo;
+pub mod domain_storage;
 pub mod dual_stack;
 pub mod remote_object;
 pub mod transport;

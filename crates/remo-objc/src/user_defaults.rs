@@ -111,14 +111,39 @@ mod apple {
         nsstring_to_string(desc).map_or(Value::Null, Value::String)
     }
 
+    /// Releases the +1 `json_to_object` handed out for an `NSString` leaf
+    /// (see its doc comment) once the caller is done handing `obj` off to
+    /// something that took its own reference (`setObject:forKey:`/
+    /// `addObject:`). A no-op for every other case `json_to_object` can
+    /// return: `NSNumber`'s `numberWith*` factory methods and
+    /// `NSMutableArray`/`NSMutableDictionary`'s `*WithCapacity:` are
+    /// autoreleased by Cocoa convention, not a reference this code owns, so
+    /// releasing them here would be an over-release, not a balance.
+    ///
+    /// # Safety
+    /// `obj` must be null or a valid ObjC object pointer, per every other
+    /// helper in this module.
+    unsafe fn release_owned_string(obj: *mut AnyObject) {
+        if !obj.is_null() && is_kind_of(obj, c"NSString") {
+            let _: () = msg_send![obj, release];
+        }
+    }
+
     /// Converts a JSON value into a property-list ObjC object suitable for
     /// `NSUserDefaults setObject:forKey:`. `Value::Null` isn't representable
     /// (there is no "nil in a dictionary" in a property list) — callers that
     /// want to remove a key should call `delete`, not `set` with `null`.
     ///
     /// # Safety
-    /// The returned pointer is a valid, retained-by-autorelease-pool ObjC
-    /// object for the duration of the caller's use.
+    /// The returned pointer is a valid ObjC object for the duration of the
+    /// caller's use. For the `NSString` case specifically it is +1-retained,
+    /// not merely autoreleased: this function is called from plain async
+    /// Rust code with no guaranteed active `NSAutoreleasePool` on the
+    /// current thread, so relying on one would be a bet, not a guarantee.
+    /// Every call site that receives a `Value::String` result must balance
+    /// that +1 with [`release_owned_string`] once it's done with `obj`
+    /// (after handing it to `setObject:forKey:`/`addObject:`) — every
+    /// call site in this file already does.
     unsafe fn json_to_object(value: &Value) -> *mut AnyObject {
         match value {
             Value::Null => std::ptr::null_mut(),
@@ -135,9 +160,23 @@ mod apple {
                 }
             }
             Value::String(s) => {
+                // `NSString::from_str` returns a `Retained<NSString>` — a
+                // strong, Rust-owned reference. Just borrowing a raw pointer
+                // out of it (`&*ns as *const NSString as *mut AnyObject`)
+                // does *not* transfer that ownership: `ns` still drops (and
+                // releases/deallocates the string) at the end of this match
+                // arm, before this function returns, leaving the caller
+                // holding a dangling pointer into freed memory. Found via a
+                // real `SIGSEGV` in `-[NSUserDefaults setObject:forKey:]`
+                // when this path was exercised for real (not just in the
+                // synchronous, allocation-light unit tests below, where the
+                // freed memory usually wasn't reused yet — undefined
+                // behavior that happened to not crash). `into_raw` transfers
+                // the +1 retain to the returned pointer instead of relying
+                // on an autorelease pool that may not exist on whatever
+                // thread this runs on (see this function's `# Safety` doc).
                 let ns = NSString::from_str(s);
-                let obj: *mut AnyObject = &*ns as *const NSString as *mut AnyObject;
-                obj
+                objc2::rc::Retained::into_raw(ns).cast()
             }
             Value::Array(items) => {
                 let array: *mut AnyObject =
@@ -146,6 +185,7 @@ mod apple {
                     let obj = json_to_object(item);
                     if !obj.is_null() {
                         let _: () = msg_send![array, addObject: obj];
+                        release_owned_string(obj);
                     }
                 }
                 array
@@ -158,6 +198,7 @@ mod apple {
                         let key_ns = NSString::from_str(key);
                         let key_obj: *mut AnyObject = &*key_ns as *const NSString as *mut AnyObject;
                         let _: () = msg_send![dict, setObject: obj, forKey: key_obj];
+                        release_owned_string(obj);
                     }
                 }
                 dict
@@ -216,6 +257,7 @@ mod apple {
         let key_obj: *mut AnyObject = &*key_ns as *const NSString as *mut AnyObject;
         let value_obj = json_to_object(value);
         let _: () = msg_send![defaults, setObject: value_obj, forKey: key_obj];
+        release_owned_string(value_obj);
         Ok(())
     }
 

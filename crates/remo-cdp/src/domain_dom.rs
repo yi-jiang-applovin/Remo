@@ -39,8 +39,10 @@ use crate::remote_object::remote_object;
 
 /// The one "document" every `Page.*`/`DOM.*` reply hangs off of — there is
 /// exactly one inspectable target (the app itself), so this is a fixed
-/// string, not a discovered URL.
-const MAIN_ORIGIN: &str = "remo://native";
+/// string, not a discovered URL. Public because `domain_storage` maps
+/// `Storage.getStorageKeyForFrame`'s main-frame case back onto this same
+/// origin.
+pub const MAIN_ORIGIN: &str = "remo://native";
 
 /// Node-count (not depth) budget for the eager `DOM.getDocument` reply. A
 /// depth cap tells you nothing on a deep-but-narrow tree (the Swift reference
@@ -342,6 +344,14 @@ fn attributes(view: &ViewNode) -> Vec<String> {
         "{:.0},{:.0} {:.0}x{:.0}",
         view.frame.x, view.frame.y, view.frame.width, view.frame.height
     ));
+    // Populated only for SwiftUI nodes spliced in by
+    // `remo_objc::swiftui_debug` — see `ViewNode::modifiers`'s doc comment
+    // for why this is a separate attribute rather than folded into
+    // `nodeName`/`localName` (the tag name) the way it briefly was.
+    if !view.modifiers.is_empty() {
+        attrs.push("modifiers".to_string());
+        attrs.push(view.modifiers.join(", "));
+    }
     attrs
 }
 
@@ -353,7 +363,7 @@ fn attributes(view: &ViewNode) -> Vec<String> {
 /// color, corner radius, label text) — not a regression, `ViewNode` simply
 /// doesn't capture those today.
 fn computed_style(view: &ViewNode) -> Vec<(String, String)> {
-    vec![
+    let mut style = vec![
         ("class".to_string(), view.class_name.clone()),
         ("left".to_string(), format!("{}px", view.frame.x as i64)),
         ("top".to_string(), format!("{}px", view.frame.y as i64)),
@@ -372,7 +382,18 @@ fn computed_style(view: &ViewNode) -> Vec<(String, String)> {
         ),
         ("tag".to_string(), view.tag.to_string()),
         ("subviews".to_string(), view.children.len().to_string()),
-    ]
+    ];
+    // SwiftUI-only, populated by `remo_objc::swiftui_debug`'s bounded
+    // properties flattener (see `ViewNode::style_rows`'s doc comment).
+    // Prefixed like a CSS custom property (`--swiftui-...`) purely as a
+    // naming convention to keep them visually distinct from the geometry-
+    // derived pseudo-CSS above in Chrome's real Styles pane — this module
+    // has no real cascade to enforce custom-property semantics for, same
+    // as every other "pseudo-CSS" field here.
+    for (title, value) in &view.style_rows {
+        style.push((format!("--swiftui-{title}"), value.clone()));
+    }
+    style
 }
 
 #[async_trait]
@@ -397,6 +418,13 @@ impl CdpDomain for DomDomain {
 
     async fn respond(&self, request: &CdpRequest, events: &EventSink) -> CdpReply {
         match request.method.as_str() {
+            // The Application panel's storage sidebar discovers origins from
+            // this frame tree, not from any `DOMStorage.*` method — so the
+            // `userdefaults://standard` bucket `domain_storage::StorageDomain`
+            // answers for is listed here as a child frame, matching the
+            // Swift reference's `frameTree()`. Extending this to more
+            // buckets (e.g. IndexedDB-backed ones) means adding more entries
+            // to `childFrames`, not changing the shape.
             "Page.getResourceTree" => CdpReply::ok(json!({
                 "frameTree": {
                     "frame": {
@@ -408,6 +436,22 @@ impl CdpDomain for DomDomain {
                         "domainAndRegistry": "",
                     },
                     "resources": [],
+                    "childFrames": [{
+                        "frame": {
+                            "id": crate::domain_storage::USERDEFAULTS_ORIGIN,
+                            "parentId": "1",
+                            "loaderId": "1",
+                            "name": crate::domain_storage::USERDEFAULTS_ORIGIN,
+                            "url": format!("{}/", crate::domain_storage::USERDEFAULTS_ORIGIN),
+                            "securityOrigin": crate::domain_storage::USERDEFAULTS_ORIGIN,
+                            "mimeType": "text/html",
+                            "domainAndRegistry": "",
+                            "secureContextType": "Secure",
+                            "crossOriginIsolatedContextType": "NotIsolated",
+                            "gatedAPIFeatures": [],
+                        },
+                        "resources": [],
+                    }],
                 }
             })),
             // A bare `{}` makes `application.js` choke on `errors.length` and
@@ -481,6 +525,8 @@ mod tests {
             alpha: 1.0,
             tag: 0,
             accessibility_id: None,
+            modifiers: Vec::new(),
+            style_rows: Vec::new(),
             children: Vec::new(),
         }
     }
@@ -498,6 +544,8 @@ mod tests {
             alpha: 1.0,
             tag: 0,
             accessibility_id: Some("root".to_string()),
+            modifiers: Vec::new(),
+            style_rows: Vec::new(),
             children,
         }
     }
@@ -608,6 +656,103 @@ mod tests {
         assert_eq!(budget, MAX_EAGER_NODES - 2);
         // 1 id for the root + 2 for its children.
         assert_eq!(domain.nodes.len(), 3);
+    }
+
+    #[test]
+    fn modifiers_surface_as_their_own_cdp_attribute_not_in_the_tag_name() {
+        // Simulates what `swiftui_debug.rs` now produces: `class_name` is
+        // just the view's own type, `modifiers` is separate — this is the
+        // shape `attributes()` (and, one level up, `nodeName`/`localName`
+        // in `node_json`) must keep apart, matching the split introduced to
+        // stop unreadable multi-hundred-character SwiftUI tag names.
+        let mut view = leaf("SwiftUI.VStack<TupleView<(Text, Text)>>");
+        view.modifiers = vec![
+            "_PaddingLayout".to_string(),
+            "_BackgroundModifier<Color>".to_string(),
+        ];
+
+        let domain = DomDomain::new();
+        let mut budget = MAX_EAGER_NODES;
+        let json = domain.node_json(&view, DOCUMENT_NODE_ID, 0, &mut budget);
+
+        assert_eq!(
+            json["nodeName"],
+            json!("SwiftUI.VStack<TupleView<(Text, Text)>>")
+        );
+        let attrs = json["attributes"].as_array().expect("attributes array");
+        let idx = attrs
+            .iter()
+            .position(|v| v == "modifiers")
+            .expect("modifiers attribute present");
+        assert_eq!(
+            attrs[idx + 1],
+            json!("_PaddingLayout, _BackgroundModifier<Color>")
+        );
+    }
+
+    #[test]
+    fn modifiers_attribute_is_absent_for_plain_uikit_nodes() {
+        let domain = DomDomain::new();
+        let mut budget = MAX_EAGER_NODES;
+        let json = domain.node_json(&leaf("UILabel"), DOCUMENT_NODE_ID, 0, &mut budget);
+        let attrs = json["attributes"].as_array().expect("attributes array");
+        assert!(!attrs.iter().any(|v| v == "modifiers"));
+    }
+
+    #[test]
+    fn style_rows_surface_as_prefixed_pseudo_css_declarations() {
+        // Simulates what `swiftui_debug.rs`'s bounded properties flattener
+        // (Part B) produces: a flat (title, value) list, including a
+        // trailing truncation-note row when the flattener's depth/row caps
+        // were hit.
+        let mut view = leaf("Text");
+        view.style_rows = vec![
+            ("font".to_string(), "title3".to_string()),
+            ("…".to_string(), "3 more (truncated)".to_string()),
+        ];
+
+        let domain = DomDomain::new();
+        let id = domain.register(&view);
+        let reply = domain.get_computed_style_for_node(&request(
+            "CSS.getComputedStyleForNode",
+            json!({ "nodeId": id }),
+        ));
+        let CdpReply::Result(value) = reply else {
+            panic!("expected a result, got an error");
+        };
+        let style = value["computedStyle"].as_array().expect("array");
+
+        let font_row = style
+            .iter()
+            .find(|d| d["name"] == json!("--swiftui-font"))
+            .expect("flattened style_rows entry present as its own pseudo-CSS declaration");
+        assert_eq!(font_row["value"], json!("title3"));
+
+        let truncation_row = style
+            .iter()
+            .find(|d| d["name"] == json!("--swiftui-…"))
+            .expect("truncation-note row is surfaced too, not silently dropped");
+        assert_eq!(truncation_row["value"], json!("3 more (truncated)"));
+
+        // The existing geometry-derived pseudo-CSS is untouched alongside it.
+        assert!(style.iter().any(|d| d["name"] == json!("left")));
+    }
+
+    #[test]
+    fn no_style_rows_means_no_extra_pseudo_css_declarations() {
+        let domain = DomDomain::new();
+        let id = domain.register(&leaf("UILabel"));
+        let reply = domain.get_computed_style_for_node(&request(
+            "CSS.getComputedStyleForNode",
+            json!({ "nodeId": id }),
+        ));
+        let CdpReply::Result(value) = reply else {
+            panic!("expected a result, got an error");
+        };
+        let style = value["computedStyle"].as_array().expect("array");
+        assert!(!style.iter().any(|d| d["name"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("--swiftui-"))));
     }
 
     #[test]

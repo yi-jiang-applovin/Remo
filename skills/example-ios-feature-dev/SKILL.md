@@ -109,9 +109,11 @@ Run a checkpoint loop. For each state you want to verify:
    roughly 3 s before a screenshot so the capture matches the settled state.
 3. **Capture** via XcodeBuildMCP's simulator screenshot tool. Prefer it over
    `remo screenshot` when you want the lossless device-native PNG for a
-   design-review diff. For structural checks, open `chrome://inspect` (or a
-   `devtools://` URL) against the running app and use the real Elements
-   panel — there's no `remo tree` command anymore.
+   design-review diff. For structural checks, open the running app's
+   `devtools://devtools/bundled/inspector.html?ws=<addr>/devtools/page/1` with
+   `open -a "Google Chrome" "<that URL>"` (skips `chrome://inspect`'s manual
+   "Configure..." step) and use the real Elements panel — there's no
+   `remo tree` command anymore.
 4. **Read** hidden state with the read capabilities you registered
    (`<feature>.visible`, counts, selected tab) to assert non-visual
    behaviour.
