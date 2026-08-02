@@ -70,6 +70,21 @@
             ReferencedContainer = "container:RemoExample.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <EnvironmentVariables>
+         <!--
+           Opt-in for remo-objc's SwiftUI view-tree inspection spike
+           (crates/remo-objc/src/swiftui_debug.rs). Must be set before the
+           first SwiftUI view builds, which for a real app means "before
+           process launch" — the Xcode scheme's launch environment is
+           exactly that. Nothing in Remo sets this on the app's own behalf;
+           this demo app opts in deliberately to demonstrate the capability.
+         -->
+         <EnvironmentVariable
+            key = "SWIFTUI_VIEW_DEBUG"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

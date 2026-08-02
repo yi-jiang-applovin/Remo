@@ -6,6 +6,7 @@ pub mod keychain;
 pub mod main_thread;
 pub mod screen_capture;
 pub mod screenshot;
+pub mod swiftui_debug;
 pub mod user_defaults;
 pub mod video_encoder;
 pub mod view_tree;

@@ -75,6 +75,21 @@ mod apple {
             }
         };
 
+        let mut children: Vec<ViewNode> = subviews.iter().map(|sv| walk_view(&sv)).collect();
+
+        // Best-effort: if this is a SwiftUI hosting seam and the (opt-in,
+        // never-on-by-default) private recorder is active, splice the real
+        // SwiftUI subtree in as additional children — a plain UIKit view
+        // never has anything to add here, and any failure inside this call
+        // (missing selector, unparseable payload, disabled recorder) is a
+        // silent no-op that leaves `children` exactly as the plain UIKit
+        // walk already produced it. See `swiftui_debug.rs` module doc for
+        // why this is safe to call unconditionally on every hosting-view
+        // node rather than needing its own extra gating here.
+        if crate::swiftui_debug::is_hosting_view_class(&class_name) {
+            children.extend(crate::swiftui_debug::dump_hosting_view(view));
+        }
+
         ViewNode {
             class_name,
             frame: Frame {
@@ -87,7 +102,7 @@ mod apple {
             alpha: view.alpha() as f64,
             tag: view.tag(),
             accessibility_id,
-            children: subviews.iter().map(|sv| walk_view(&sv)).collect(),
+            children,
         }
     }
 }
