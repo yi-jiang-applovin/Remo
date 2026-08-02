@@ -30,9 +30,13 @@ public final class AppStore: @unchecked Sendable {
     var toastMessage: String?
     var showConfetti: Bool = false
     var activityLog: [LogEntry] = []
+    var networkStatus: String = "idle"
 
     public init() {
         seedDemoData()
+        Task { [weak self] in
+            await self?.performDemoFetch()
+        }
     }
 
     var accentColor: Color {
@@ -171,6 +175,35 @@ extension AppStore {
             sqlite3_bind_int(insertStatement, 2, index % 2 == 0 ? 1 : 0)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
             sqlite3_step(insertStatement)
+        }
+    }
+}
+
+// MARK: - Demo network activity
+//
+// Remo has no Network domain/capability yet — there was nothing making a
+// real HTTP request anywhere in this app to test one against in the first
+// place. This adds one real `URLSession` call (fired once at launch, and
+// repeatable from Settings) so any future network-interception work has
+// live traffic to intercept instead of an app that never talks to the
+// network at all.
+extension AppStore {
+    func performDemoFetch() async {
+        guard let url = URL(string: "https://jsonplaceholder.typicode.com/todos/1") else { return }
+        let request = URLRequest(url: url)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(decoding: data.prefix(200), as: UTF8.self)
+            await MainActor.run {
+                networkStatus = "GET /todos/1 → \(status)"
+            }
+            log(capability: "network.demoFetch", params: url.absoluteString, result: "\(status): \(body)")
+        } catch {
+            await MainActor.run {
+                networkStatus = "GET /todos/1 → failed: \(error.localizedDescription)"
+            }
+            log(capability: "network.demoFetch", params: url.absoluteString, result: "error: \(error.localizedDescription)")
         }
     }
 }

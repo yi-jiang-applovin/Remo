@@ -47,6 +47,13 @@ struct SettingsPage: View {
                     }
                 }
 
+                Section("Network") {
+                    LabeledContent("Last request", value: store.networkStatus)
+                    Button("Fetch Demo Data") {
+                        Task { await store.performDemoFetch() }
+                    }
+                }
+
                 Section("Try It") {
                     CopyableCommand(
                         label: "Toast",
