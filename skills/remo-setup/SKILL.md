@@ -42,10 +42,17 @@ land at `.remo/bin/remo`. Use the install and verification commands from `refere
 resolve the binary in this order: `.remo/bin/remo`, then `remo`. If neither exists, stop and
 complete the install first.
 
-If DevTools is chosen: skip the install entirely. Confirm your browser-automation tool can open
-`devtools://devtools/bundled/inspector.html?ws=<addr>/devtools/page/1` once the app is running
-(Step 4 covers getting `<addr>`), and use the Console's `remo.invoke(...)`/bare `remo` for every
-verification step below that would otherwise use a `remo` command.
+If DevTools is chosen: skip the install entirely. Open it directly once the app is running (Step 4
+covers getting `<addr>`) — no browser-automation tool needed, this is a plain shell command:
+
+```bash
+open -a "Google Chrome" "devtools://devtools/bundled/inspector.html?ws=<addr>/devtools/page/1"
+```
+
+This skips `chrome://inspect`'s manual "Configure..." step entirely (see `references/cli.md`'s
+"Opening DevTools Directly" section for why `-a "Google Chrome"` is required). Then use the
+Console's `remo.invoke(...)`/bare `remo` for every verification step below that would otherwise
+use a `remo` command.
 
 ## Step 2: Add the SDK
 
@@ -152,7 +159,8 @@ The setup is complete when all of the following are true:
 - screenshot capture works
 - the Elements panel renders the app's real view hierarchy
 - if the CLI was chosen: the binary resolves correctly and the app appears in `remo devices`
-- if DevTools was chosen: `devtools://...` connects and `Remo.invoke` is reachable from the Console
+- if DevTools was chosen: the `open -a "Google Chrome" "devtools://..."` command connects and
+  `Remo.invoke` is reachable from the Console
 
 After that, switch to `remo` (or DevTools) for verification work and `remo-capabilities` for
 project-specific capabilities.
