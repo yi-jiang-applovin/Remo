@@ -17,6 +17,7 @@ async fn build_cdp_app(registry: CapabilityRegistry) -> axum::Router {
         dispatcher.register(Arc::new(crate::cdp_adapter::remo_domain(registry.clone())));
         dispatcher.register(Arc::new(remo_cdp::domain_page::PageDomain::new()));
         dispatcher.register(Arc::new(remo_cdp::domain_dom::DomDomain::new()));
+        dispatcher.register(Arc::new(remo_cdp::domain_storage::StorageDomain::new()));
         dispatcher
     });
     axum::Router::new()

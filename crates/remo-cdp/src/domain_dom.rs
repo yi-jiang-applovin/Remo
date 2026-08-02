@@ -39,8 +39,10 @@ use crate::remote_object::remote_object;
 
 /// The one "document" every `Page.*`/`DOM.*` reply hangs off of — there is
 /// exactly one inspectable target (the app itself), so this is a fixed
-/// string, not a discovered URL.
-const MAIN_ORIGIN: &str = "remo://native";
+/// string, not a discovered URL. Public because `domain_storage` maps
+/// `Storage.getStorageKeyForFrame`'s main-frame case back onto this same
+/// origin.
+pub const MAIN_ORIGIN: &str = "remo://native";
 
 /// Node-count (not depth) budget for the eager `DOM.getDocument` reply. A
 /// depth cap tells you nothing on a deep-but-narrow tree (the Swift reference
@@ -397,6 +399,13 @@ impl CdpDomain for DomDomain {
 
     async fn respond(&self, request: &CdpRequest, events: &EventSink) -> CdpReply {
         match request.method.as_str() {
+            // The Application panel's storage sidebar discovers origins from
+            // this frame tree, not from any `DOMStorage.*` method — so the
+            // `userdefaults://standard` bucket `domain_storage::StorageDomain`
+            // answers for is listed here as a child frame, matching the
+            // Swift reference's `frameTree()`. Extending this to more
+            // buckets (e.g. IndexedDB-backed ones) means adding more entries
+            // to `childFrames`, not changing the shape.
             "Page.getResourceTree" => CdpReply::ok(json!({
                 "frameTree": {
                     "frame": {
@@ -408,6 +417,22 @@ impl CdpDomain for DomDomain {
                         "domainAndRegistry": "",
                     },
                     "resources": [],
+                    "childFrames": [{
+                        "frame": {
+                            "id": crate::domain_storage::USERDEFAULTS_ORIGIN,
+                            "parentId": "1",
+                            "loaderId": "1",
+                            "name": crate::domain_storage::USERDEFAULTS_ORIGIN,
+                            "url": format!("{}/", crate::domain_storage::USERDEFAULTS_ORIGIN),
+                            "securityOrigin": crate::domain_storage::USERDEFAULTS_ORIGIN,
+                            "mimeType": "text/html",
+                            "domainAndRegistry": "",
+                            "secureContextType": "Secure",
+                            "crossOriginIsolatedContextType": "NotIsolated",
+                            "gatedAPIFeatures": [],
+                        },
+                        "resources": [],
+                    }],
                 }
             })),
             // A bare `{}` makes `application.js` choke on `errors.length` and
