@@ -344,6 +344,14 @@ fn attributes(view: &ViewNode) -> Vec<String> {
         "{:.0},{:.0} {:.0}x{:.0}",
         view.frame.x, view.frame.y, view.frame.width, view.frame.height
     ));
+    // Populated only for SwiftUI nodes spliced in by
+    // `remo_objc::swiftui_debug` — see `ViewNode::modifiers`'s doc comment
+    // for why this is a separate attribute rather than folded into
+    // `nodeName`/`localName` (the tag name) the way it briefly was.
+    if !view.modifiers.is_empty() {
+        attrs.push("modifiers".to_string());
+        attrs.push(view.modifiers.join(", "));
+    }
     attrs
 }
 
@@ -506,6 +514,7 @@ mod tests {
             alpha: 1.0,
             tag: 0,
             accessibility_id: None,
+            modifiers: Vec::new(),
             children: Vec::new(),
         }
     }
@@ -523,6 +532,7 @@ mod tests {
             alpha: 1.0,
             tag: 0,
             accessibility_id: Some("root".to_string()),
+            modifiers: Vec::new(),
             children,
         }
     }
@@ -633,6 +643,47 @@ mod tests {
         assert_eq!(budget, MAX_EAGER_NODES - 2);
         // 1 id for the root + 2 for its children.
         assert_eq!(domain.nodes.len(), 3);
+    }
+
+    #[test]
+    fn modifiers_surface_as_their_own_cdp_attribute_not_in_the_tag_name() {
+        // Simulates what `swiftui_debug.rs` now produces: `class_name` is
+        // just the view's own type, `modifiers` is separate — this is the
+        // shape `attributes()` (and, one level up, `nodeName`/`localName`
+        // in `node_json`) must keep apart, matching the split introduced to
+        // stop unreadable multi-hundred-character SwiftUI tag names.
+        let mut view = leaf("SwiftUI.VStack<TupleView<(Text, Text)>>");
+        view.modifiers = vec![
+            "_PaddingLayout".to_string(),
+            "_BackgroundModifier<Color>".to_string(),
+        ];
+
+        let domain = DomDomain::new();
+        let mut budget = MAX_EAGER_NODES;
+        let json = domain.node_json(&view, DOCUMENT_NODE_ID, 0, &mut budget);
+
+        assert_eq!(
+            json["nodeName"],
+            json!("SwiftUI.VStack<TupleView<(Text, Text)>>")
+        );
+        let attrs = json["attributes"].as_array().expect("attributes array");
+        let idx = attrs
+            .iter()
+            .position(|v| v == "modifiers")
+            .expect("modifiers attribute present");
+        assert_eq!(
+            attrs[idx + 1],
+            json!("_PaddingLayout, _BackgroundModifier<Color>")
+        );
+    }
+
+    #[test]
+    fn modifiers_attribute_is_absent_for_plain_uikit_nodes() {
+        let domain = DomDomain::new();
+        let mut budget = MAX_EAGER_NODES;
+        let json = domain.node_json(&leaf("UILabel"), DOCUMENT_NODE_ID, 0, &mut budget);
+        let attrs = json["attributes"].as_array().expect("attributes array");
+        assert!(!attrs.iter().any(|v| v == "modifiers"));
     }
 
     #[test]

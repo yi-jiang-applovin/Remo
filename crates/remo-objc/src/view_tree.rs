@@ -16,6 +16,14 @@ pub struct ViewNode {
     pub tag: isize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accessibility_id: Option<String>,
+    /// SwiftUI modifiers applied to this node (e.g. `_PaddingLayout`,
+    /// `_BackgroundModifier<Color>`), kept separate from `class_name` so the
+    /// Elements panel's tag name stays just the view's own type — see
+    /// `swiftui_debug.rs`, the only producer of a non-empty list here.
+    /// Empty (and not serialized at all) for every plain-UIKit node, which
+    /// is all of them outside that module.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modifiers: Vec<String>,
     pub children: Vec<ViewNode>,
 }
 
@@ -102,6 +110,7 @@ mod apple {
             alpha: view.alpha() as f64,
             tag: view.tag(),
             accessibility_id,
+            modifiers: Vec::new(),
             children,
         }
     }
@@ -130,6 +139,7 @@ mod apple {
             alpha: 1.0,
             tag: 0,
             accessibility_id: None,
+            modifiers: Vec::new(),
             children: vec![],
         })
     }

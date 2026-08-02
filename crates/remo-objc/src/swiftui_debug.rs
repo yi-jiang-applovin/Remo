@@ -536,11 +536,32 @@ fn decode_json_node(value: &serde_json::Value) -> Option<ViewNode> {
     // synthetic `<modifier: ...>` label keeps the subtree intact; only a
     // node with neither a type name nor any modifiers is truly nothing to
     // show, and gets dropped.
-    let class_name = match (type_name, modifiers.is_empty()) {
-        (Some(t), true) => t,
-        (Some(t), false) => format!("{t} [{}]", modifiers.join(", ")),
-        (None, false) => format!("<modifier: {}>", modifiers.join(", ")),
-        (None, true) => return None,
+    //
+    // The view's own type name and its modifier list are kept as two
+    // separate fields (`class_name` / `modifiers`) rather than one
+    // concatenated string — SwiftUI's modifier chains are already deeply
+    // nested generics on their own, and appending them to `class_name`
+    // (which `domain_dom.rs` maps straight to the CDP `nodeName` the
+    // Elements panel displays as the tag name) produced unreadable
+    // multi-hundred-character tags. `domain_dom.rs`'s `attributes()`
+    // surfaces `modifiers` as its own CDP attribute instead.
+    let class_name = match &type_name {
+        Some(t) => t.clone(),
+        // The "only a modifier, no view type" case still needs *some*
+        // label — synthesize one from the modifier list rather than an
+        // empty tag name (and don't also duplicate it into `modifiers`,
+        // since it's standing in for the missing type name here, not
+        // describing a modifier applied *to* a named view).
+        None if !modifiers.is_empty() => format!("<modifier: {}>", modifiers.join(", ")),
+        None => return None,
+    };
+    // Only nodes that had a real view type of their own carry a separate
+    // `modifiers` list; the synthetic `<modifier: ...>` label above already
+    // encodes that same information in `class_name` for the type-less case.
+    let modifiers = if type_name.is_some() {
+        modifiers
+    } else {
+        Vec::new()
     };
 
     let children = value
@@ -561,6 +582,7 @@ fn decode_json_node(value: &serde_json::Value) -> Option<ViewNode> {
         alpha: 1.0,
         tag: 0,
         accessibility_id: None,
+        modifiers,
         children,
     })
 }
@@ -636,10 +658,15 @@ mod tests {
         }]);
         let nodes = decode_json_nodes(&json).expect("should decode");
         assert_eq!(nodes.len(), 1);
-        assert!(nodes[0].class_name.contains("VStack"));
-        assert!(nodes[0].class_name.contains("_PaddingLayout"));
+        // `class_name` is now just the view's own type — no modifier text
+        // appended, matching the CDP `nodeName` the Elements panel displays
+        // as the tag name (see `domain_dom.rs`'s `attributes()` for where
+        // `modifiers` surfaces instead).
+        assert_eq!(nodes[0].class_name, "VStack<TupleView<(Text, Text)>>");
+        assert_eq!(nodes[0].modifiers, vec!["_PaddingLayout".to_string()]);
         assert_eq!(nodes[0].children.len(), 1);
         assert_eq!(nodes[0].children[0].class_name, "Text");
+        assert!(nodes[0].children[0].modifiers.is_empty());
     }
 
     #[test]
@@ -652,7 +679,8 @@ mod tests {
             "children": []
         }]);
         let nodes = decode_json_nodes(&json).expect("should decode");
-        assert!(nodes[0].class_name.contains("<unknown modifier>"));
+        assert_eq!(nodes[0].class_name, "Text");
+        assert_eq!(nodes[0].modifiers, vec!["<unknown modifier>".to_string()]);
     }
 
     #[test]
@@ -669,6 +697,11 @@ mod tests {
         }]);
         let nodes = decode_json_nodes(&json).expect("should decode, not drop");
         assert!(nodes[0].class_name.contains("_PaddingLayout"));
+        // The synthetic `<modifier: ...>` label already carries this
+        // information in `class_name` (there's no real view type here for
+        // `modifiers` to be "applied to"), so it isn't duplicated into the
+        // separate `modifiers` field too.
+        assert!(nodes[0].modifiers.is_empty());
     }
 
     #[test]
@@ -752,10 +785,14 @@ mod tests {
         }]);
         let nodes = decode_json_nodes(&json).expect("should decode");
         assert_eq!(nodes.len(), 1);
-        assert!(nodes[0]
-            .class_name
-            .contains("NavigationSearchAdjustmentModifier"));
+        assert_eq!(
+            nodes[0].class_name,
+            "ModifiedContent<_ConditionalContent<_ViewList_View, TabItemGroup.HostView>, NavigationSearchAdjustmentModifier>"
+        );
+        assert!(nodes[0].modifiers.is_empty());
         assert_eq!(nodes[0].children.len(), 1);
+        // The child has a modifier (flags:2) property and no flags:1 view
+        // type — the synthetic `<modifier: ...>` label case again.
         assert!(nodes[0].children[0]
             .class_name
             .contains("NavigationSearchAdjustmentModifier"));
