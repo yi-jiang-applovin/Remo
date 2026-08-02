@@ -558,10 +558,24 @@ fn namespace_remote_object(path: &str, children: &[(String, ChildKind)]) -> Valu
 /// `objectId`: a function reference has no further properties worth
 /// expanding here (no real `.call`/`.bind`/closure internals to show).
 fn function_remote_object(full_name: &str) -> Value {
+    // DevTools extracts the name it displays after the `ƒ` glyph by parsing
+    // `description` as if it were real V8 function source — expecting
+    // `function <name>(...) { ... }`, the same shape V8 itself produces for
+    // a native/built-in function (e.g. `function values() { [native code] }`).
+    // An earlier version of this used `"ƒ remo.{full_name}()"` directly,
+    // which doesn't match that shape at all: DevTools' parser found nothing
+    // it recognized as a name and rendered `ƒ undefined()` instead — a real
+    // bug, found from a live screenshot, not a hypothetical. Using the
+    // capability's last dotted segment as the declared name fixes the
+    // display *and* the `{ ... }` body doubles as exactly the kind of
+    // inline description a human inspecting the Console benefits from —
+    // the full dotted capability name, so `select` under `grid.tab` still
+    // reads unambiguously as `grid.tab.select`.
+    let leaf = full_name.rsplit('.').next().unwrap_or(full_name);
     json!({
         "type": "function",
         "className": "Function",
-        "description": format!("ƒ remo.{full_name}()"),
+        "description": format!("function {leaf}() {{ [remo capability: {full_name}] }}"),
     })
 }
 
