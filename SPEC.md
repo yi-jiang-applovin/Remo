@@ -88,7 +88,7 @@ The SDK starts a TCP server inside the app. Real devices are discovered via USB 
 | `remo-sdk` | iOS | Embedded TCP server + capability registry + built-in capabilities + C ABI FFI layer | remo-protocol, remo-transport, remo-objc, remo-bonjour, base64, dashmap |
 | `remo-objc` | iOS* | ObjC runtime bridge: view tree, screenshot, device/app info, GCD main-thread dispatch | objc2, objc2-foundation, objc2-ui-kit |
 | `remo-cdp` | Cross | Real Chrome DevTools Protocol: HTTP discovery, WS transport/dispatcher, `Page`/`DOM`/`CSS`/`Overlay` domains, the custom `Remo.*` domain, dual-stack accept helper | axum, hyper, chromiumoxide_cdp, remo-objc |
-| `remo-cli` | macOS | Thin CDP client: `devices`, `capabilities`, `call`, `tree`, `screenshot`, `info` | remo-usbmuxd, remo-bonjour, tokio-tungstenite, clap |
+| `remo-cli` | macOS | Thin CDP client: `devices`, `capabilities`, `call`, `screenshot`, `info` | remo-usbmuxd, remo-bonjour, tokio-tungstenite, clap |
 | `remo-mcp` | macOS | Agent-facing MCP companion server: `list_capabilities`/`invoke_capability`, proxying to the `Remo.*` CDP domain | rmcp, tokio-tungstenite |
 
 *`remo-objc` compiles on all platforms with stubs; real UIKit access requires the `uikit` feature and an Apple target.

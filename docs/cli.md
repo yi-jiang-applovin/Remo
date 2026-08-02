@@ -36,7 +36,7 @@ Whenever the CLI changes, update all of the following as needed:
 1. Command list and examples for any newly added, removed, or renamed command
 2. Option names, defaults, and flag spellings
 3. Connection semantics for `--addr` and `--device`
-4. Output behavior for `screenshot`, `tree`, and `call` (note whether the result is wrapped)
+4. Output behavior for `screenshot`, `info`, and `call` (note whether the result is wrapped)
 5. The "What moved" section listing anything dropped in the CDP rewrite (dashboard, mirror,
    daemon, watch) and where its replacement lives or is tracked
 6. Known caveats and tracked gaps — e.g. `Remo.capabilitiesChanged` not being wired up yet, or
