@@ -203,7 +203,7 @@ impl Dispatcher {
         let total_ms: u64 = stats.values().map(|s| s.total_micros).sum::<u64>() / 1000;
         tracing::info!(requests, total_ms, "cdp session ended");
         let mut ranked: Vec<_> = stats.iter().collect();
-        ranked.sort_by(|a, b| b.1.total_micros.cmp(&a.1.total_micros));
+        ranked.sort_by_key(|b| std::cmp::Reverse(b.1.total_micros));
         for (method, stat) in ranked.into_iter().take(5) {
             tracing::info!(
                 method,
