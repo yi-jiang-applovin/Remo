@@ -29,6 +29,7 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSObject", "NSString", "NSArray", "NSDictionary", "NSValue",
     "NSUserDefaults", "NSData", "NSNull", "NSObjCRuntime", "NSPathUtilities",
+    "NSProcessInfo",
 ] }
 objc2-ui-kit = { version = "0.3", features = ["UIView", "UIWindow", "UIApplication", "UIViewController", "UIResponder"], optional = true }
 security-framework = { version = "3", default-features = false }

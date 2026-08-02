@@ -14,7 +14,20 @@
 //! `UIApplicationMain`/`@main App` starts, e.g. via the Xcode scheme's
 //! launch environment — this crate does not, and should not, try to flip
 //! that env var itself at runtime, since by the time any Remo code runs the
-//! first SwiftUI views have almost always already built). The payload
+//! first SwiftUI views have almost always already built).
+//!
+//! **Gotcha confirmed the hard way**: a scheme's `EnvironmentVariables`
+//! block (what `RemoExample.xcscheme` sets) only takes effect when Xcode
+//! itself launches the app (its own Run action, or `xcodebuild ... build
+//! test`-style actions that go through the scheme). Driving the simulator
+//! through other tooling — e.g. `xcodebuildmcp simulator build-and-run`,
+//! which installs the build product and launches it via `simctl` directly —
+//! does **not** read the scheme's env vars at all, silently. To activate
+//! this capability from that kind of tooling, launch (or relaunch) the app
+//! with the `SIMCTL_CHILD_` env-var prefix `simctl launch` itself supports,
+//! e.g.:
+//! `SIMCTL_CHILD_SWIFTUI_VIEW_DEBUG=1 xcrun simctl launch <udid> com.remo.example`.
+//! The payload
 //! format (`NSData` containing either JSON on newer OS versions or a
 //! property list on older ones) and the meaning of each node's `flags`
 //! field are themselves undocumented and reverse-engineered — see the
@@ -83,6 +96,59 @@ pub fn recording_enabled() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// OS version allowlist
+// ---------------------------------------------------------------------------
+//
+// Deliberately an *allowlist*, not a "try it and see if it parses" — for a
+// pipeline built entirely on reverse-engineered private API, "the payload
+// decoded without an error" is not evidence it decoded *correctly*. The
+// dangerous failure mode here isn't a hard parse failure (that's visible:
+// an empty subtree, a debug log). It's the OS changing `flags` semantics or
+// the payload shape *just* enough that decoding still succeeds but produces
+// a plausible-looking, semantically wrong tree — silently misleading data
+// in a debugging tool, which is worse than the tool visibly not working.
+// Getting this pipeline working at all took two real crash/correctness
+// fixes discovered only by running it for real (an objc2 type-encoding
+// panic on `-bytes`, a serde_json recursion-limit failure, and the true
+// `attribute`-nested JSON schema — none of that was predictable from the
+// original write-up alone). That history is exactly why "parses" isn't
+// trusted as "verified" here: every OS major version below must have
+// actually been run through the Phase-0 spike (dump the raw payload via
+// `SWIFTUI_DEBUG_DUMP_DIR`, confirm it decodes into a tree that matches the
+// real view hierarchy) before being added.
+
+/// OS major versions this module's private-API pipeline has actually been
+/// spike-verified against. Confirmed specifically on iOS 26.2 (see this
+/// module's git history); iOS 26.x in general is assumed close enough to
+/// share the same payload shape, but no other major version has been
+/// checked at all.
+const VERIFIED_MAJOR_OS_VERSIONS: &[i64] = &[26];
+
+/// Portable so it's unit-testable without objc2/a real device — see
+/// `current_os_version` (Apple-only, below) for where the actual version
+/// numbers come from.
+fn is_verified_os_version(major: i64) -> bool {
+    VERIFIED_MAJOR_OS_VERSIONS.contains(&major)
+}
+
+/// Logged at most once per process — a deep view hierarchy can contain many
+/// hosting views, and every one of them would otherwise repeat this warning
+/// for a single `DOM.getDocument` call.
+static WARNED_UNSUPPORTED_OS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn warn_unsupported_os_once(major: i64, minor: i64, patch: i64) {
+    if WARNED_UNSUPPORTED_OS.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    tracing::warn!(
+        os_version = %format!("{major}.{minor}.{patch}"),
+        "unsupported OS {major}.{minor}.{patch}, skipping SwiftUI debug capture — \
+         has this been verified with the Phase-0 spike test? see swiftui_debug.rs"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Apple target implementation
 // ---------------------------------------------------------------------------
 
@@ -92,8 +158,22 @@ mod apple {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::{msg_send, sel};
-    use objc2_foundation::NSData;
+    use objc2_foundation::{NSData, NSProcessInfo};
     use objc2_ui_kit::UIView;
+
+    /// The running process's `(major, minor, patch)` OS version, via the
+    /// fully public `NSProcessInfo.operatingSystemVersion` — the one piece
+    /// of this module that talks to a documented API, specifically so the
+    /// version gate itself can't be the thing that breaks.
+    fn current_os_version() -> (i64, i64, i64) {
+        let info = NSProcessInfo::processInfo();
+        let v = info.operatingSystemVersion();
+        (
+            v.majorVersion as i64,
+            v.minorVersion as i64,
+            v.patchVersion as i64,
+        )
+    }
 
     /// Whether `obj` is an instance of `class_name` (or a subclass) —
     /// checked at the actual runtime class, not assumed from the selector
@@ -269,6 +349,16 @@ mod apple {
         }
         let class_name = view.class().name().to_str().unwrap_or("").to_owned();
         if !is_hosting_view_class(&class_name) {
+            return Vec::new();
+        }
+        // Version gate: short-circuit before any private-API call is even
+        // attempted (not just before decoding) on an OS major version this
+        // pipeline hasn't been spike-verified against. See the module doc
+        // above `VERIFIED_MAJOR_OS_VERSIONS` for why "it might just parse
+        // fine anyway" is exactly the risk this refuses to take.
+        let (major, minor, patch) = current_os_version();
+        if !is_verified_os_version(major) {
+            warn_unsupported_os_once(major, minor, patch);
             return Vec::new();
         }
         let view_ptr: *const UIView = view;
@@ -498,6 +588,19 @@ mod tests {
     fn recording_disabled_by_default() {
         std::env::remove_var("SWIFTUI_VIEW_DEBUG");
         assert!(!recording_enabled());
+    }
+
+    #[test]
+    fn verified_os_version_allowlist_is_exact_not_a_range() {
+        // Spike-verified: iOS 26.x.
+        assert!(is_verified_os_version(26));
+        // Never checked at all — must stay gated off until someone actually
+        // re-runs the spike and extends the allowlist, not just because the
+        // major version number is adjacent to a verified one.
+        assert!(!is_verified_os_version(25));
+        assert!(!is_verified_os_version(27));
+        assert!(!is_verified_os_version(18));
+        assert!(!is_verified_os_version(0));
     }
 
     #[test]
