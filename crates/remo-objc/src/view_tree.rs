@@ -24,6 +24,17 @@ pub struct ViewNode {
     /// is all of them outside that module.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modifiers: Vec<String>,
+    /// Flattened `(title, value)` property rows — SwiftUI-only, like
+    /// `modifiers` above. Produced by `swiftui_debug.rs`'s bounded
+    /// `flatten_node_properties` (depth- and row-capped, with a trailing
+    /// truncation-note row when either limit is hit) from a node's full
+    /// decoded attribute tree, including nested `subattributes`. Consumed
+    /// by `domain_cdp`'s `domain_dom.rs`, which folds these into the
+    /// existing `CSS.getComputedStyleForNode` pseudo-CSS declarations
+    /// alongside `frame`, so Chrome's real Elements "Styles" pane shows
+    /// them for free.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style_rows: Vec<(String, String)>,
     pub children: Vec<ViewNode>,
 }
 
@@ -111,6 +122,7 @@ mod apple {
             tag: view.tag(),
             accessibility_id,
             modifiers: Vec::new(),
+            style_rows: Vec::new(),
             children,
         }
     }
@@ -140,6 +152,7 @@ mod apple {
             tag: 0,
             accessibility_id: None,
             modifiers: Vec::new(),
+            style_rows: Vec::new(),
             children: vec![],
         })
     }

@@ -452,8 +452,10 @@ fn parse_json_deeply_nested(bytes: &[u8]) -> serde_json::Result<serde_json::Valu
 }
 
 fn decode_json_nodes(value: &serde_json::Value) -> Option<Vec<ViewNode>> {
+    reset_filter_counters();
     let array = value.as_array()?;
     let nodes: Vec<ViewNode> = array.iter().filter_map(decode_json_node).collect();
+    log_filter_summary();
     if nodes.is_empty() {
         None
     } else {
@@ -545,8 +547,23 @@ fn decode_json_node(value: &serde_json::Value) -> Option<ViewNode> {
     // Elements panel displays as the tag name) produced unreadable
     // multi-hundred-character tags. `domain_dom.rs`'s `attributes()`
     // surfaces `modifiers` as its own CDP attribute instead.
+    //
+    // That alone isn't enough, though: a `flags:1` type string can *itself*
+    // be a `ModifiedContent<Base, Modifier>` — SwiftUI's own type system
+    // nests modifiers into the type, not just this payload's separate
+    // `flags:2` properties. Confirmed against a real captured node in this
+    // demo app: a 3018-character `readableType` that was
+    // `ModifiedContent<ModifiedContent<NavigationStackStyledCore<...>, ...>,
+    // ...>` — no sibling `flags:2` property to split off at all, so the
+    // step-1 fix alone left it untouched. `unwrap_modified_content` peels
+    // that apart the same way, recursively, before it ever becomes
+    // `class_name`.
     let class_name = match &type_name {
-        Some(t) => t.clone(),
+        Some(t) => {
+            let (base, peeled) = unwrap_modified_content(t);
+            modifiers.extend(peeled);
+            base
+        }
         // The "only a modifier, no view type" case still needs *some*
         // label — synthesize one from the modifier list rather than an
         // empty tag name (and don't also duplicate it into `modifiers`,
@@ -563,12 +580,37 @@ fn decode_json_node(value: &serde_json::Value) -> Option<ViewNode> {
     } else {
         Vec::new()
     };
+    // Defensive cap, independent of the `ModifiedContent`-unwrapping above:
+    // the *base* type left after unwrapping can still be enormous on its
+    // own (that same real 3018-char node's base, after peeling 2 modifiers,
+    // was `NavigationStackStyledCore<...>` wrapping a whole `VStack` tree —
+    // still thousands of characters). This isn't
+    // `LKS_SwiftUICompactFilter`-grade structural recognition for every
+    // container shape (out of scope for this pass); it's a hard length
+    // limit so nothing ever reaches a tag name in the thousands of
+    // characters again, full stop.
+    let class_name = cap_display_length(&class_name, MAX_CLASS_NAME_CHARS);
 
-    let children = value
+    // Bounded properties flattener (independent of the tag-name logic
+    // above) — walks this node's full attribute tree, including nested
+    // `subattributes`, into flat rows for `domain_dom.rs`'s
+    // `CSS.getComputedStyleForNode` pseudo-CSS mapping. See
+    // `flatten_node_properties`'s doc comment for the depth/row limits and
+    // truncation behavior.
+    let style_rows = flatten_node_properties(properties, FLATTEN_DEPTH_LIMIT, FLATTEN_ROW_CAP);
+
+    let raw_children: Vec<ViewNode> = value
         .get("children")
         .and_then(serde_json::Value::as_array)
         .map(|kids| kids.iter().filter_map(decode_json_node).collect())
         .unwrap_or_default();
+    // Node-hiding filter (see `classify`'s doc comment) — applied here,
+    // one level up from where each child was itself decoded, so an
+    // `ElideHoist` decision can splice that child's own (already
+    // bottom-up-filtered) children directly into *this* node's child list.
+    let children = apply_view_filter(raw_children);
+
+    count_decoded_node();
 
     Some(ViewNode {
         class_name,
@@ -583,8 +625,317 @@ fn decode_json_node(value: &serde_json::Value) -> Option<ViewNode> {
         tag: 0,
         accessibility_id: None,
         modifiers,
+        style_rows,
         children,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Part A — recursive `ModifiedContent<Base, Modifier>` unwrapping for the
+// tag name, and a hard length cap as the last line of defense.
+// ---------------------------------------------------------------------------
+
+/// Hard cap on `class_name`'s displayed length, applied after
+/// `ModifiedContent` unwrapping. Not a structural-recognition attempt at
+/// every possible huge container shape (`TupleView<(A, B, C, ...)>` and
+/// friends can still be long) — just a safety net so nothing this deep ever
+/// produces a tag name in the thousands of characters again. Starting
+/// point, not a carefully-tuned exact value; adjust if real payloads
+/// suggest a different number reads better in practice.
+const MAX_CLASS_NAME_CHARS: usize = 200;
+
+/// Truncates `s` to at most `max_chars` *characters* (not bytes — these
+/// strings are printable ASCII in every payload seen so far, but char-safe
+/// truncation costs nothing and avoids ever panicking on a multi-byte
+/// boundary), appending `…` when truncation actually happened.
+fn cap_display_length(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut truncated: String = s.chars().take(max_chars).collect();
+    truncated.push('…');
+    truncated
+}
+
+/// Recursively peels `ModifiedContent<Base, Modifier>` off a SwiftUI type
+/// string, the way SwiftUI's own type system nests a view's applied
+/// modifiers *into its type* — a `flags:2` property is a separate, sibling
+/// way modifiers show up in this payload, but this is the other one, and
+/// nothing about the payload's `properties` array signals it; it only shows
+/// up by pattern-matching the type string itself.
+///
+/// Returns `(base_type, peeled_modifiers)` where `peeled_modifiers` is
+/// ordered outermost-first (the modifier applied last, textually the
+/// outermost wrapper, comes first) — an arbitrary but documented choice;
+/// nothing currently depends on the order.
+///
+/// Stops as soon as the outermost shape no longer parses as
+/// `ModifiedContent<X, Y>` (including: wrong number of top-level generic
+/// arguments, which a real `ModifiedContent` should never have but a
+/// different, unanticipated shape might) — never guesses past what it can
+/// actually parse.
+fn unwrap_modified_content(type_str: &str) -> (String, Vec<String>) {
+    let mut current = type_str.trim().to_string();
+    let mut modifiers = Vec::new();
+    loop {
+        let Some((name, mut args)) = parse_outer_generic(&current) else {
+            break;
+        };
+        if !is_modified_content(name) || args.len() != 2 {
+            break;
+        }
+        // `args` is [Base, Modifier] in source order.
+        let modifier = args.remove(1);
+        let base = args.remove(0);
+        modifiers.push(modifier.trim().to_string());
+        current = base.trim().to_string();
+    }
+    (current, modifiers)
+}
+
+/// Whether `name` (the part of a type string before its first top-level
+/// `<`) refers to `ModifiedContent`, tolerating a module-qualified form
+/// (`SwiftUI.ModifiedContent`) — `readableType` strings seen so far never
+/// carry the module prefix, but `type` (fully-qualified) always does, and
+/// nothing guarantees which one this function is ever called with.
+fn is_modified_content(name: &str) -> bool {
+    name == "ModifiedContent" || name.ends_with(".ModifiedContent")
+}
+
+/// Parses `Name<Arg1, Arg2, ...>` into `(Name, [Arg1, Arg2, ...])`, splitting
+/// only on *top-level* commas — i.e. not commas nested inside another
+/// `<...>` generic or a `(...)` tuple type (SwiftUI type strings routinely
+/// contain both, e.g. `TupleView<(Text, Image)>`). Returns `None` if `s`
+/// doesn't have this shape at all, or if the generic argument list isn't
+/// properly balanced (defensive against a future payload format this
+/// wasn't written against — never panics on malformed input).
+fn parse_outer_generic(s: &str) -> Option<(&str, Vec<&str>)> {
+    let open = s.find('<')?;
+    // The whole string must be exactly `Name<...>` — if there's anything
+    // after the matching close bracket, this isn't a single bare generic
+    // type (could be a tuple element list, a qualified member reference
+    // like `Foo<Bar>.Baz`, etc.) and guessing which part to unwrap would
+    // risk silently mangling something this wasn't verified against.
+    let close = matching_close_angle_bracket(s, open)?;
+    if close != s.len() - 1 {
+        return None;
+    }
+    let name = &s[..open];
+    if name.is_empty() {
+        return None;
+    }
+    let inner = &s[open + 1..close];
+    Some((name, split_top_level_commas(inner)))
+}
+
+/// Finds the index of the `>` that closes the `<` at byte index `open`,
+/// tracking nesting depth across `<>`, `()`, and `[]` (SwiftUI type strings
+/// use tuple parens; brackets aren't known to appear, but costs nothing to
+/// track defensively). Returns `None` if the brackets never balance.
+fn matching_close_angle_bracket(s: &str, open: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    debug_assert_eq!(bytes.get(open), Some(&b'<'));
+    let mut depth: i32 = 0;
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'<' | b'(' | b'[' => depth += 1,
+            b'>' | b')' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Splits `s` on top-level commas only — depth-tracked across `<>`, `()`,
+/// and `[]` the same way `matching_close_angle_bracket` is, so a comma
+/// inside a nested generic or tuple never causes a false split.
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let bytes = s.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'<' | b'(' | b'[' => depth += 1,
+            b'>' | b')' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
+}
+
+// ---------------------------------------------------------------------------
+// Part B — bounded properties flattener, feeding the pseudo-CSS surface.
+// ---------------------------------------------------------------------------
+
+/// Starting points for the flattener's bounds, not carefully-tuned exact
+/// requirements — matching LookInside's own `SwiftUIAttributeFlattener`
+/// signature (`depthLimit`/`rowCap`), reverse-engineered from its binary
+/// symbols, which takes these as *parameters* rather than fixed constants.
+/// Kept as plain constants here since nothing today calls this with a
+/// different value, but nothing structurally prevents it either.
+const FLATTEN_DEPTH_LIMIT: usize = 8;
+const FLATTEN_ROW_CAP: usize = 50;
+/// Per-row title/value length cap — the same class of problem
+/// `MAX_CLASS_NAME_CHARS` guards against (a deeply-nested-generic type
+/// string used verbatim), just applied to properties-panel rows instead of
+/// the tag name. Confirmed necessary live: without this, a `flags:1`
+/// attribute with no `name_hint`, no scalar value, and no subattributes
+/// produces a row whose title *and* value are both its own (potentially
+/// thousands-of-characters) type string.
+const FLATTEN_ROW_TEXT_CHAR_LIMIT: usize = 150;
+
+/// Flattens every property on a node — its `flags:0`/`1`/`2` attributes and
+/// their nested `subattributes`, recursively — into a flat list of
+/// `(title, value)` rows suitable for a CDP pseudo-CSS declaration list.
+/// Not exact Swift-call-syntax reconstruction (no attempt at rendering
+/// `.font(.title3)`); LookInside's own `jsonValueToString`/`compactJSON`
+/// symbols don't do that either, just readable stringification, so this
+/// doesn't try to clear a bar the reference implementation itself doesn't
+/// clear.
+///
+/// Bounded on two axes, matching `SwiftUIAttributeFlattener.flatten`'s
+/// signature: `depth_limit` caps how far into nested `subattributes` this
+/// recurses, `row_cap` caps the total number of rows produced across the
+/// whole node. When either limit stops the walk from descending into or
+/// including something, a trailing `("…", "N more (truncated)")` row is
+/// appended so the cut-off is visible in the CDP reply rather than a
+/// silent drop — matching the spirit (not the exact wording) of the
+/// `" more (truncated)"` string confirmed via `strings` against the real
+/// `LookInsideServer.xcframework` binary.
+fn flatten_node_properties(
+    properties: &[serde_json::Value],
+    depth_limit: usize,
+    row_cap: usize,
+) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    let mut skipped = 0usize;
+    for prop in properties {
+        if let Some(attribute) = prop.get("attribute") {
+            flatten_attribute(
+                attribute,
+                None,
+                0,
+                depth_limit,
+                row_cap,
+                &mut rows,
+                &mut skipped,
+            );
+        }
+    }
+    if skipped > 0 {
+        rows.push(("…".to_string(), format!("{skipped} more (truncated)")));
+    }
+    rows
+}
+
+/// One step of the flattener's recursion. `name_hint` is the title to use
+/// when the caller already knows it (a `subattributes` entry's own
+/// `"name"`, e.g. `"searchAdjustment"`); falls back to the attribute's own
+/// type name (`attribute_text`) when there is none (true for every
+/// top-level `flags:0/1/2` property, which don't carry a `"name"`).
+///
+/// A node beyond `depth_limit`, or once `row_cap` rows have already been
+/// produced, is counted in `skipped` and *not* recursed into further —
+/// deliberately not attempting an exact remaining-row count (which would
+/// mean walking the rest of the tree anyway, defeating the point of a
+/// bound), just a visible "something was cut off here" signal.
+#[allow(clippy::too_many_arguments)]
+fn flatten_attribute(
+    attribute: &serde_json::Value,
+    name_hint: Option<&str>,
+    depth: usize,
+    depth_limit: usize,
+    row_cap: usize,
+    rows: &mut Vec<(String, String)>,
+    skipped: &mut usize,
+) {
+    if depth > depth_limit || rows.len() >= row_cap {
+        *skipped += 1;
+        return;
+    }
+    // Same hard cap as `class_name` (Part A), and for the same reason: a
+    // top-level `flags:1`/`flags:2` attribute's own type name is exactly
+    // the kind of deeply-nested-generic string that can be thousands of
+    // characters, and here it's used verbatim as both a row's *title* (with
+    // no `name_hint` to fall back on) and, in the no-value/no-subattributes
+    // branch below, its *value* too — a `--swiftui-<huge string>` custom
+    // property would just be the same tag-name problem restated inside the
+    // Styles pane instead of fixed. Unlike `class_name`, this is not run
+    // through `unwrap_modified_content` first (these rows are meant to be
+    // short, readable labels, not a second place asserting exact SwiftUI
+    // type-parsing correctness) — the flat length cap alone is enough here.
+    let title = cap_display_length(
+        &name_hint
+            .map(str::to_string)
+            .or_else(|| attribute_text(attribute))
+            .unwrap_or_else(|| "?".to_string()),
+        FLATTEN_ROW_TEXT_CHAR_LIMIT,
+    );
+
+    let scalar_value = attribute
+        .get("value")
+        .filter(|v| !v.is_null())
+        .map(stringify_attribute_value);
+    let subattributes = attribute
+        .get("subattributes")
+        .and_then(serde_json::Value::as_array)
+        .filter(|subs| !subs.is_empty());
+
+    match (scalar_value, subattributes) {
+        (Some(value), _) => rows.push((
+            title,
+            cap_display_length(&value, FLATTEN_ROW_TEXT_CHAR_LIMIT),
+        )),
+        (None, Some(subs)) => {
+            for sub in subs {
+                let sub_name = sub.get("name").and_then(serde_json::Value::as_str);
+                flatten_attribute(
+                    sub,
+                    sub_name,
+                    depth + 1,
+                    depth_limit,
+                    row_cap,
+                    rows,
+                    skipped,
+                );
+            }
+        }
+        // Nothing scalar and nothing to recurse into — still informative
+        // to show that this property exists, using its own type as the
+        // value (e.g. a modifier with a genuinely empty payload under the
+        // safe env-var path, matching the "modifier payloads are often
+        // null" caveat this module already documents elsewhere).
+        (None, None) => {
+            if let Some(t) = attribute_text(attribute) {
+                rows.push((title, cap_display_length(&t, FLATTEN_ROW_TEXT_CHAR_LIMIT)));
+            }
+        }
+    }
+}
+
+/// Stringifies a JSON value for display — matching LookInside's own
+/// `jsonValueToString`/`compactJSON` bar (readable stringification), not
+/// exact Swift-syntax reconstruction. Scalars render as their natural text
+/// form; objects/arrays render as compact JSON.
+fn stringify_attribute_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
 }
 
 /// Prefers `attribute.readableType` (short, human-facing) over
@@ -597,6 +948,226 @@ fn attribute_text(attribute: &serde_json::Value) -> Option<String> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Node-hiding filter — collapses purely-structural SwiftUI plumbing nodes
+// (never real user content) out of the tree.
+// ---------------------------------------------------------------------------
+//
+// Mirrors the *shape* of `LKS_SwiftUIFilterDecision` from the real
+// `LookInsideServer.xcframework` binary, confirmed via `nm -a | swift
+// demangle`:
+//
+//   enum LKS_SwiftUIFilterDecision: Equatable {
+//       case keep
+//       case elideHoist     // remove this node; splice its children up
+//       case elideSubviews  // keep this node, discard its children
+//       case mergeInto(String)
+//   }
+//
+// backed there by (at least) `isTransparentGenericStackWrapper` and
+// `isColorBackedByColorView` — `nm`/reflection only gives their *signatures*,
+// never their bodies, so `classify` below is this crate's own independently
+// reasoned heuristic, not a port of theirs. It is also deliberately more
+// conservative than what the signatures alone might suggest: the real
+// predicates apparently also weigh geometry (`containsProjectedStackLayout`
+// looks like it avoids eliding a wrapper that would destroy a stack
+// layout's frame information further down) — this crate's SwiftUI nodes all
+// report a zero frame today (a documented, separate gap — see
+// `decode_json_node`'s flags:0 handling above), so geometry is not an
+// available signal here and isn't used as one. Where the real
+// implementation might have geometry to lean on, this one leans on a
+// narrower, exact-match type-name allowlist instead, on the theory that
+// under-eliding (a few extra harmless wrapper nodes stay visible) is a far
+// safer failure mode for a debugging tool than over-eliding (hiding real
+// content).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FilterDecision {
+    Keep,
+    /// Remove this node; splice its children directly into its parent's
+    /// position instead.
+    ElideHoist,
+    /// Keep this node itself, but discard its children (they're known
+    /// internal plumbing, not user content).
+    ElideSubviews,
+    /// Fold this node's info into a named ancestor group instead of
+    /// emitting it as a separate tree node. Never actually produced by
+    /// `classify` in this pass — Part B's properties flattener already
+    /// folds a node's *own* modifier/attribute detail into `style_rows`,
+    /// which covers the cases this crate has evidence for; merging a whole
+    /// *separate sibling node's* identity into an ancestor is a different,
+    /// riskier operation with no real captured payload to justify a
+    /// specific heuristic for yet. Kept only so the enum's shape matches
+    /// the real one — nothing constructs this variant today.
+    #[allow(dead_code)]
+    MergeInto(String),
+}
+
+/// Type-name prefixes recognized as purely-structural SwiftUI plumbing that
+/// contributes no visual/semantic identity of its own — candidates for
+/// `ElideHoist`, and *only* candidates: `classify` additionally requires
+/// exactly one child and no modifiers of the wrapper's own before actually
+/// eliding one (see its doc comment for why name-matching alone isn't
+/// enough). Deliberately excludes real layout containers
+/// (`VStack`/`HStack`/`ZStack`/`List`/`ScrollView`/...) even though some of
+/// them can also appear with a single child — those are genuine content
+/// containers a user would recognize and want to see, not implementation
+/// plumbing, so they're never candidates here regardless of child count.
+const TRANSPARENT_WRAPPER_PREFIXES: &[&str] = &[
+    "_VariadicView.Tree<",
+    "_VariadicView_Children",
+    "TupleView<",
+    "_ConditionalContent<",
+    "_UnaryViewAdaptor<",
+    "LazyView<",
+    "PlaceholderContentView<",
+    "AnyView",
+];
+
+/// Exact base type names (the part of `class_name` before any generic `<`)
+/// recognized as known leaf SwiftUI primitives — candidates for
+/// `ElideSubviews`. Exact-match, not prefix/substring match, specifically
+/// so this can never accidentally fire on an unrelated type that merely
+/// starts with, say, `"Color"` (`ColorPicker`, a real interactive control a
+/// user would want to see, is not `"Color"`).
+const LEAF_PRIMITIVE_BASE_NAMES: &[&str] = &["Color", "Spacer", "Divider", "EmptyView"];
+
+/// Classifies one already-decoded (and already recursively filtered —
+/// `children` here reflects this node's own children *after* their own
+/// level's filtering already ran) `ViewNode` for the node-hiding filter.
+///
+/// `ElideSubviews` is checked first and doesn't require an empty
+/// `modifiers` list — hiding a `Color`/`Spacer`/etc.'s internal-plumbing
+/// children is safe regardless of whether a modifier was applied to the
+/// primitive itself (that modifier detail is unaffected; it's still on
+/// this node, which stays in the tree). `ElideHoist` is stricter: it
+/// removes the node entirely, so it additionally requires the wrapper to
+/// carry no modifiers of its own (losing modifier detail by silently
+/// deleting the node that carried it would be exactly the kind of
+/// information loss this filter must not cause) and exactly one child
+/// (hoisting a multi-child wrapper would ambiguously reparent siblings that
+/// were never siblings in the real view tree).
+fn classify(node: &ViewNode) -> FilterDecision {
+    let base_name = node
+        .class_name
+        .split('<')
+        .next()
+        .unwrap_or(&node.class_name);
+
+    if LEAF_PRIMITIVE_BASE_NAMES.contains(&base_name) && !node.children.is_empty() {
+        return FilterDecision::ElideSubviews;
+    }
+
+    if node.modifiers.is_empty()
+        && node.children.len() == 1
+        && TRANSPARENT_WRAPPER_PREFIXES
+            .iter()
+            .any(|prefix| node.class_name.starts_with(prefix))
+    {
+        return FilterDecision::ElideHoist;
+    }
+
+    FilterDecision::Keep
+}
+
+/// Escape hatch for A/B comparison and rollback without a rebuild — set to
+/// disable the filter entirely and get the pre-filter tree back, e.g. to
+/// confirm a specific node's disappearance is actually this filter's doing.
+fn filter_disabled() -> bool {
+    std::env::var_os("SWIFTUI_DEBUG_DISABLE_NODE_FILTER").is_some()
+}
+
+/// Applies `classify` to one node's already-decoded children, producing the
+/// filtered child list actually attached to the `ViewNode` being built.
+fn apply_view_filter(children: Vec<ViewNode>) -> Vec<ViewNode> {
+    apply_view_filter_with(children, filter_disabled())
+}
+
+/// The actual filtering logic, taking `disabled` as a plain argument rather
+/// than reading the env var itself — specifically so tests can exercise the
+/// disabled path directly rather than mutating process-global env state
+/// (`std::env::set_var` in one `#[test]` racing another's `filter_disabled()`
+/// read, since Rust test binaries run tests concurrently by default).
+fn apply_view_filter_with(children: Vec<ViewNode>, disabled: bool) -> Vec<ViewNode> {
+    if disabled {
+        return children;
+    }
+    let mut result = Vec::with_capacity(children.len());
+    for child in children {
+        match classify(&child) {
+            FilterDecision::Keep => {
+                FILTER_KEPT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                result.push(child);
+            }
+            FilterDecision::ElideHoist => {
+                FILTER_ELIDE_HOIST_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                result.extend(child.children);
+            }
+            FilterDecision::ElideSubviews => {
+                FILTER_ELIDE_SUBVIEWS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut kept = child;
+                kept.children.clear();
+                result.push(kept);
+            }
+            FilterDecision::MergeInto(_) => {
+                // Never actually produced by `classify` today — see its
+                // doc comment — but handled for completeness rather than
+                // left as an unreachable match arm, in case that changes.
+                FILTER_MERGE_INTO_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                result.push(child);
+            }
+        }
+    }
+    result
+}
+
+/// Per-`DOM.getDocument`-call (really: per hosting view — see
+/// `decode_json_nodes`, the only caller of `reset_filter_counters`/
+/// `log_filter_summary`) counters, so the filter's effect is directly
+/// observable via tracing rather than only inferable from tree-size
+/// differences. `Relaxed` throughout: these are diagnostic counters, not
+/// synchronization.
+static DECODED_NODE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FILTER_KEPT_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FILTER_ELIDE_HOIST_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static FILTER_ELIDE_SUBVIEWS_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static FILTER_MERGE_INTO_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn reset_filter_counters() {
+    use std::sync::atomic::Ordering::Relaxed;
+    DECODED_NODE_COUNT.store(0, Relaxed);
+    FILTER_KEPT_COUNT.store(0, Relaxed);
+    FILTER_ELIDE_HOIST_COUNT.store(0, Relaxed);
+    FILTER_ELIDE_SUBVIEWS_COUNT.store(0, Relaxed);
+    FILTER_MERGE_INTO_COUNT.store(0, Relaxed);
+}
+
+fn count_decoded_node() {
+    DECODED_NODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn log_filter_summary() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let decoded = DECODED_NODE_COUNT.load(Relaxed);
+    let hoisted = FILTER_ELIDE_HOIST_COUNT.load(Relaxed);
+    let elided_subviews = FILTER_ELIDE_SUBVIEWS_COUNT.load(Relaxed);
+    let merged = FILTER_MERGE_INTO_COUNT.load(Relaxed);
+    if hoisted == 0 && elided_subviews == 0 && merged == 0 {
+        return;
+    }
+    tracing::debug!(
+        decoded_nodes = decoded,
+        kept = FILTER_KEPT_COUNT.load(Relaxed),
+        elide_hoist = hoisted,
+        elide_subviews = elided_subviews,
+        merge_into = merged,
+        disabled = filter_disabled(),
+        "SwiftUI node-hiding filter summary"
+    );
 }
 
 #[cfg(all(target_vendor = "apple", feature = "uikit"))]
@@ -785,16 +1356,451 @@ mod tests {
         }]);
         let nodes = decode_json_nodes(&json).expect("should decode");
         assert_eq!(nodes.len(), 1);
+        // This fragment's own `readableType` is itself a
+        // `ModifiedContent<Base, Modifier>` — recursive unwrapping (Part A)
+        // now peels that apart into a clean base `class_name` plus a
+        // `modifiers` entry, instead of leaving the whole concatenated
+        // generic as the tag name.
         assert_eq!(
             nodes[0].class_name,
-            "ModifiedContent<_ConditionalContent<_ViewList_View, TabItemGroup.HostView>, NavigationSearchAdjustmentModifier>"
+            "_ConditionalContent<_ViewList_View, TabItemGroup.HostView>"
         );
-        assert!(nodes[0].modifiers.is_empty());
+        assert_eq!(
+            nodes[0].modifiers,
+            vec!["NavigationSearchAdjustmentModifier".to_string()]
+        );
         assert_eq!(nodes[0].children.len(), 1);
         // The child has a modifier (flags:2) property and no flags:1 view
         // type — the synthetic `<modifier: ...>` label case again.
         assert!(nodes[0].children[0]
             .class_name
             .contains("NavigationSearchAdjustmentModifier"));
+    }
+
+    // -----------------------------------------------------------------
+    // Part A — recursive ModifiedContent unwrapping + length cap.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unwraps_a_single_level_of_modified_content() {
+        let (base, modifiers) = unwrap_modified_content(
+            "ModifiedContent<VStack<TupleView<(Text, Text)>>, _PaddingLayout>",
+        );
+        assert_eq!(base, "VStack<TupleView<(Text, Text)>>");
+        assert_eq!(modifiers, vec!["_PaddingLayout".to_string()]);
+    }
+
+    #[test]
+    fn unwraps_multiple_nested_levels_recursively() {
+        let (base, modifiers) = unwrap_modified_content(
+            "ModifiedContent<ModifiedContent<Text, _EnvironmentKeyWritingModifier<ContentTransition>>, _AnimationModifier<Int>>",
+        );
+        assert_eq!(base, "Text");
+        assert_eq!(
+            modifiers,
+            vec![
+                "_AnimationModifier<Int>".to_string(),
+                "_EnvironmentKeyWritingModifier<ContentTransition>".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_modified_content_type_is_left_completely_alone() {
+        let (base, modifiers) = unwrap_modified_content("VStack<TupleView<(Text, Text)>>");
+        assert_eq!(base, "VStack<TupleView<(Text, Text)>>");
+        assert!(modifiers.is_empty());
+    }
+
+    #[test]
+    fn tolerates_a_module_qualified_modified_content_name() {
+        let (base, modifiers) = unwrap_modified_content(
+            "SwiftUI.ModifiedContent<SwiftUI.Text, SwiftUI._PaddingLayout>",
+        );
+        assert_eq!(base, "SwiftUI.Text");
+        assert_eq!(modifiers, vec!["SwiftUI._PaddingLayout".to_string()]);
+    }
+
+    #[test]
+    fn a_malformed_or_unrecognized_shape_is_never_force_unwrapped() {
+        // Three top-level generic args, not the two a real `ModifiedContent`
+        // always has — must be left alone rather than guessing which two to
+        // treat as (Base, Modifier).
+        let (base, modifiers) = unwrap_modified_content("ModifiedContent<A, B, C>");
+        assert_eq!(base, "ModifiedContent<A, B, C>");
+        assert!(modifiers.is_empty());
+    }
+
+    #[test]
+    fn cap_display_length_only_truncates_when_over_the_limit() {
+        assert_eq!(cap_display_length("short", 200), "short");
+        let exactly_at_limit = "a".repeat(200);
+        assert_eq!(cap_display_length(&exactly_at_limit, 200), exactly_at_limit);
+        let over_limit = "a".repeat(250);
+        let capped = cap_display_length(&over_limit, 200);
+        assert_eq!(capped.chars().count(), 201); // 200 chars + the "…" marker
+        assert!(capped.ends_with('…'));
+    }
+
+    /// The actual 3018-character `readableType` captured live from this
+    /// demo app's own `TabHostingController` hosting view (iOS 26.2
+    /// simulator, `SWIFTUI_DEBUG_DUMP_DIR`) — not a synthetic
+    /// approximation. Confirms the real worst-case node this pass was
+    /// built to fix: recursive unwrapping alone still leaves a huge base
+    /// (`NavigationStackStyledCore<...>`, itself wrapping a whole `VStack`
+    /// tree), so the hard length cap is what actually keeps the tag name
+    /// short here, not the unwrapping alone.
+    const REAL_WORST_CASE_READABLE_TYPE: &str = "ModifiedContent<ModifiedContent<NavigationStackStyledCore<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<VStack<TupleView<(ConnectionBadge, Spacer, Text, ModifiedContent<ModifiedContent<Text, _EnvironmentKeyWritingModifier<ContentTransition>>, _AnimationModifier<Int>>, ModifiedContent<ModifiedContent<Text, _EnvironmentKeyWritingModifier<Optional<Text.Case>>>, _EnvironmentKeyWritingModifier<CGFloat>>, HStack<TupleView<(CounterButton, CounterButton, CounterButton)>>, Spacer, Optional<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<HStack<TupleView<(Image, Text)>>, _EnvironmentKeyWritingModifier<Optional<Font>>>, _ForegroundStyleModifier<HierarchicalShapeStyle>>, _PaddingLayout>, _PaddingLayout>, _InsettableBackgroundShapeModifier<Material, Capsule>>>)>>, _PaddingLayout>, TransactionalPreferenceTransformModifier<NavigationTitleKey>>, _PreferenceTransformModifier<ToolbarKey>>, _TaskModifier>, NavigationStackRootDecoratingModifier>>, PositionedNavigationDestinationProcessor<NavigationStackReader<NavigationStackStyledCore<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<VStack<TupleView<(ConnectionBadge, Spacer, Text, ModifiedContent<ModifiedContent<Text, _EnvironmentKeyWritingModifier<ContentTransition>>, _AnimationModifier<Int>>, ModifiedContent<ModifiedContent<Text, _EnvironmentKeyWritingModifier<Optional<Text.Case>>>, _EnvironmentKeyWritingModifier<CGFloat>>, HStack<TupleView<(CounterButton, CounterButton, CounterButton)>>, Spacer, Optional<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<HStack<TupleView<(Image, Text)>>, _EnvironmentKeyWritingModifier<Optional<Font>>>, _ForegroundStyleModifier<HierarchicalShapeStyle>>, _PaddingLayout>, _PaddingLayout>, _InsettableBackgroundShapeModifier<Material, Capsule>>>)>>, _PaddingLayout>, TransactionalPreferenceTransformModifier<NavigationTitleKey>>, _PreferenceTransformModifier<ToolbarKey>>, _TaskModifier>, NavigationStackRootDecoratingModifier>>, ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<VStack<TupleView<(ConnectionBadge, Spacer, Text, ModifiedContent<ModifiedContent<Text, _EnvironmentKeyWritingModifier<ContentTransition>>, _AnimationModifier<Int>>, ModifiedContent<ModifiedContent<Text, _EnvironmentKeyWritingModifier<Optional<Text.Case>>>, _EnvironmentKeyWritingModifier<CGFloat>>, HStack<TupleView<(CounterButton, CounterButton, CounterButton)>>, Spacer, Optional<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<ModifiedContent<HStack<TupleView<(Image, Text)>>, _EnvironmentKeyWritingModifier<Optional<Font>>>, _ForegroundStyleModifier<HierarchicalShapeStyle>>, _PaddingLayout>, _PaddingLayout>, _InsettableBackgroundShapeModifier<Material, Capsule>>>)>>, _PaddingLayout>, TransactionalPreferenceTransformModifier<NavigationTitleKey>>, _PreferenceTransformModifier<ToolbarKey>>, _TaskModifier>>.AppliedBody>>, _PreferenceTransformModifier<InspectorStorageV5.PreferenceKey>>";
+
+    #[test]
+    fn real_3018_char_worst_case_node_unwraps_and_caps_to_a_short_tag_name() {
+        assert_eq!(REAL_WORST_CASE_READABLE_TYPE.chars().count(), 3018);
+        let (base, modifiers) = unwrap_modified_content(REAL_WORST_CASE_READABLE_TYPE);
+        // Two levels of ModifiedContent peeled off the outside; the base
+        // left over (a NavigationStackStyledCore wrapping a whole VStack
+        // tree) is still huge on its own — recursive unwrapping alone does
+        // NOT fully solve this real case, which is exactly why the hard
+        // cap below exists.
+        assert_eq!(modifiers.len(), 2);
+        assert!(base.starts_with("NavigationStackStyledCore<"));
+        assert!(
+            base.chars().count() > MAX_CLASS_NAME_CHARS,
+            "this is the real case the cap exists for — expected the unwrapped base to still be huge"
+        );
+
+        let capped = cap_display_length(&base, MAX_CLASS_NAME_CHARS);
+        assert_eq!(capped.chars().count(), MAX_CLASS_NAME_CHARS + 1);
+        assert!(capped.ends_with('…'));
+
+        // End-to-end through the actual decode path, not just the two
+        // helpers in isolation.
+        let json = serde_json::json!([{
+            "properties": [
+                { "id": 0, "attribute": { "flags": 1, "readableType": REAL_WORST_CASE_READABLE_TYPE } }
+            ],
+            "children": []
+        }]);
+        let nodes = decode_json_nodes(&json).expect("should decode");
+        assert!(nodes[0].class_name.chars().count() <= MAX_CLASS_NAME_CHARS + 1);
+        assert!(nodes[0]
+            .class_name
+            .starts_with("NavigationStackStyledCore<"));
+        assert!(nodes[0].class_name.ends_with('…'));
+        assert_eq!(nodes[0].modifiers.len(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Part B — bounded properties flattener.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn flattens_a_scalar_subattribute_into_a_row() {
+        let properties = serde_json::json!([
+            {
+                "attribute": {
+                    "type": "SwiftUI.NavigationSearchAdjustmentModifier",
+                    "readableType": "NavigationSearchAdjustmentModifier",
+                    "flags": 0,
+                    "subattributes": [
+                        {
+                            "name": "searchAdjustment",
+                            "readableType": "SearchAdjustment",
+                            "value": "disabled",
+                            "type": "SwiftUI.SearchAdjustment",
+                            "flags": 0
+                        }
+                    ]
+                }
+            }
+        ]);
+        let rows = flatten_node_properties(properties.as_array().unwrap(), 8, 50);
+        assert_eq!(
+            rows,
+            vec![("searchAdjustment".to_string(), "disabled".to_string())]
+        );
+    }
+
+    #[test]
+    fn leaf_attribute_with_no_value_falls_back_to_its_own_type_as_the_value() {
+        let properties = serde_json::json!([
+            {
+                "attribute": {
+                    "type": "SwiftUI._PaddingLayout",
+                    "readableType": "_PaddingLayout",
+                    "flags": 2
+                }
+            }
+        ]);
+        let rows = flatten_node_properties(properties.as_array().unwrap(), 8, 50);
+        assert_eq!(
+            rows,
+            vec![("_PaddingLayout".to_string(), "_PaddingLayout".to_string())]
+        );
+    }
+
+    #[test]
+    fn flattened_row_title_and_value_are_capped_like_class_name_is() {
+        // Confirmed live: a `flags:1` attribute with no `name_hint`, no
+        // scalar value, and no subattributes otherwise produces a row whose
+        // title *and* value are both its own type string verbatim — for a
+        // deeply-nested-generic SwiftUI type, that's the exact same
+        // unreadable-length problem `class_name` has, just restated as a
+        // `--swiftui-<huge>` custom property in the Styles pane instead.
+        let huge_type = format!("VStack<{}>", "Text, ".repeat(60));
+        assert!(huge_type.chars().count() > FLATTEN_ROW_TEXT_CHAR_LIMIT);
+        let properties = serde_json::json!([
+            { "attribute": { "type": huge_type.clone(), "readableType": huge_type, "flags": 1 } }
+        ]);
+        let rows = flatten_node_properties(properties.as_array().unwrap(), 8, 50);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].0.chars().count() <= FLATTEN_ROW_TEXT_CHAR_LIMIT + 1);
+        assert!(rows[0].1.chars().count() <= FLATTEN_ROW_TEXT_CHAR_LIMIT + 1);
+        assert!(rows[0].0.ends_with('…'));
+        assert!(rows[0].1.ends_with('…'));
+    }
+
+    #[test]
+    fn row_cap_truncates_and_reports_a_note() {
+        // 5 top-level properties, each a leaf with no value/subattributes.
+        let properties: Vec<serde_json::Value> = (0..5)
+            .map(|i| {
+                serde_json::json!({
+                    "attribute": {
+                        "type": format!("SwiftUI.Thing{i}"),
+                        "readableType": format!("Thing{i}"),
+                        "flags": 2
+                    }
+                })
+            })
+            .collect();
+        let rows = flatten_node_properties(&properties, 8, 2);
+        // 2 real rows (the cap) + 1 truncation-note row.
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], ("Thing0".to_string(), "Thing0".to_string()));
+        assert_eq!(rows[1], ("Thing1".to_string(), "Thing1".to_string()));
+        assert_eq!(rows[2].0, "…");
+        assert!(rows[2].1.contains("more (truncated)"));
+    }
+
+    #[test]
+    fn depth_limit_truncates_deeply_nested_subattributes_and_reports_a_note() {
+        // Build a chain of subattributes nested 5 deep; a depth_limit of 2
+        // should stop partway through and report the cut-off.
+        fn nested(depth: usize) -> serde_json::Value {
+            if depth == 0 {
+                serde_json::json!({
+                    "name": "leaf",
+                    "type": "SwiftUI.Leaf",
+                    "readableType": "Leaf",
+                    "flags": 0,
+                    "value": "bottom"
+                })
+            } else {
+                serde_json::json!({
+                    "name": format!("level{depth}"),
+                    "type": "SwiftUI.Level",
+                    "readableType": "Level",
+                    "flags": 0,
+                    "subattributes": [nested(depth - 1)]
+                })
+            }
+        }
+        let properties = vec![serde_json::json!({ "attribute": nested(5) })];
+        let rows = flatten_node_properties(&properties, 2, 50);
+        // Row cap wasn't hit; depth limit was — still expect a truncation
+        // note, not a silent drop.
+        assert!(rows.iter().any(|(title, _)| title == "…"));
+    }
+
+    #[test]
+    fn no_truncation_note_when_nothing_was_cut_off() {
+        let properties = serde_json::json!([
+            { "attribute": { "type": "SwiftUI.Text", "readableType": "Text", "flags": 1 } }
+        ]);
+        let rows = flatten_node_properties(properties.as_array().unwrap(), 8, 50);
+        assert!(!rows.iter().any(|(title, _)| title == "…"));
+    }
+
+    // -----------------------------------------------------------------
+    // Node-hiding filter (classify / apply_view_filter).
+    // -----------------------------------------------------------------
+
+    fn node(class_name: &str, modifiers: Vec<&str>, children: Vec<ViewNode>) -> ViewNode {
+        ViewNode {
+            class_name: class_name.to_string(),
+            frame: Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            is_hidden: false,
+            alpha: 1.0,
+            tag: 0,
+            accessibility_id: None,
+            modifiers: modifiers.into_iter().map(str::to_string).collect(),
+            style_rows: Vec::new(),
+            children,
+        }
+    }
+
+    fn leaf_node(class_name: &str) -> ViewNode {
+        node(class_name, vec![], vec![])
+    }
+
+    #[test]
+    fn transparent_wrapper_with_one_child_and_no_modifiers_is_elide_hoist() {
+        let wrapper = node(
+            "_VariadicView.Tree<_VStackLayout, _VariadicView_Children>",
+            vec![],
+            vec![leaf_node("Text")],
+        );
+        assert_eq!(classify(&wrapper), FilterDecision::ElideHoist);
+    }
+
+    #[test]
+    fn transparent_wrapper_with_two_children_is_kept_not_hoisted() {
+        // Hoisting a multi-child wrapper would ambiguously reparent
+        // siblings that were never siblings in the real view tree.
+        let wrapper = node(
+            "_VariadicView.Tree<_VStackLayout, _VariadicView_Children>",
+            vec![],
+            vec![leaf_node("Text"), leaf_node("Image")],
+        );
+        assert_eq!(classify(&wrapper), FilterDecision::Keep);
+    }
+
+    #[test]
+    fn transparent_wrapper_carrying_its_own_modifier_is_kept_not_hoisted() {
+        // Eliding this would silently delete the modifier detail it
+        // carries — never allowed, regardless of child count.
+        let wrapper = node("AnyView", vec!["_PaddingLayout"], vec![leaf_node("Text")]);
+        assert_eq!(classify(&wrapper), FilterDecision::Keep);
+    }
+
+    #[test]
+    fn real_layout_container_is_never_a_hoist_candidate_even_with_one_child() {
+        // The exact case this filter must never do: a genuine content
+        // container (VStack/HStack/ZStack/...) is not "plumbing" just
+        // because it happens to have a single child in this particular
+        // screen — a user would recognize and want to see it.
+        for name in [
+            "VStack<Text>",
+            "HStack<Text>",
+            "ZStack<Text>",
+            "List<Text>",
+            "ScrollView<Text>",
+        ] {
+            let container = node(name, vec![], vec![leaf_node("Text")]);
+            assert_eq!(
+                classify(&container),
+                FilterDecision::Keep,
+                "{name} must never be hoisted"
+            );
+        }
+    }
+
+    #[test]
+    fn known_leaf_primitive_with_children_elides_its_subviews() {
+        for name in ["Color", "Spacer", "Divider", "EmptyView"] {
+            let primitive = node(name, vec![], vec![leaf_node("_InternalPlumbing")]);
+            assert_eq!(
+                classify(&primitive),
+                FilterDecision::ElideSubviews,
+                "{name} should elide its internal-plumbing children"
+            );
+        }
+    }
+
+    #[test]
+    fn leaf_primitive_name_match_is_exact_not_substring() {
+        // A real interactive control that merely starts with "Color" must
+        // never be mistaken for the bare `Color` primitive.
+        let picker = node("ColorPicker<Label>", vec![], vec![leaf_node("_Internal")]);
+        assert_eq!(classify(&picker), FilterDecision::Keep);
+    }
+
+    #[test]
+    fn leaf_primitive_with_no_children_has_nothing_to_elide() {
+        let primitive = leaf_node("Color");
+        assert_eq!(classify(&primitive), FilterDecision::Keep);
+    }
+
+    #[test]
+    fn apply_view_filter_splices_hoisted_children_into_the_parent_list() {
+        // The wrapper has exactly its one required child (a real
+        // multi-child container is never a hoist candidate — see
+        // `transparent_wrapper_with_two_children_is_kept_not_hoisted`);
+        // that single child itself has its own children, which must all
+        // still be present after hoisting.
+        let grandchild = leaf_node("Image");
+        let wrapper_child = node("Text", vec![], vec![grandchild]);
+        let wrapper = node(
+            "_VariadicView.Tree<_VStackLayout, _VariadicView_Children>",
+            vec![],
+            vec![wrapper_child],
+        );
+        let sibling = leaf_node("Button");
+        let filtered = apply_view_filter(vec![wrapper, sibling]);
+        // The wrapper itself is gone; its one real child takes its place
+        // among its siblings, still carrying its own grandchild.
+        let names: Vec<&str> = filtered.iter().map(|n| n.class_name.as_str()).collect();
+        assert_eq!(names, vec!["Text", "Button"]);
+        assert_eq!(filtered[0].children.len(), 1);
+        assert_eq!(filtered[0].children[0].class_name, "Image");
+    }
+
+    #[test]
+    fn apply_view_filter_clears_children_for_elide_subviews_but_keeps_the_node() {
+        let primitive = node("Spacer", vec![], vec![leaf_node("_InternalPlumbing")]);
+        let filtered = apply_view_filter(vec![primitive]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].class_name, "Spacer");
+        assert!(filtered[0].children.is_empty());
+    }
+
+    #[test]
+    fn apply_view_filter_disabled_is_a_full_bypass() {
+        // Exercises the `disabled` branch directly via
+        // `apply_view_filter_with`, rather than mutating the real
+        // `SWIFTUI_DEBUG_DISABLE_NODE_FILTER` process env var — tests run
+        // concurrently by default, and a shared env var would race against
+        // every other test in this module that (indirectly, through
+        // `apply_view_filter`/`filter_disabled`) reads it.
+        let wrapper = node(
+            "_VariadicView.Tree<_VStackLayout, _VariadicView_Children>",
+            vec![],
+            vec![leaf_node("Text")],
+        );
+        let filtered = apply_view_filter_with(vec![wrapper], true);
+        // Bypassed entirely — the wrapper itself is still present, unhoisted.
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].class_name.starts_with("_VariadicView.Tree"));
+    }
+
+    /// A real captured fragment (see `decodes_a_real_captured_fragment_with_subattributes`
+    /// above for provenance) exercised end-to-end through `decode_json_nodes`:
+    /// its child is a bare `NavigationSearchAdjustmentModifier` label with no
+    /// children of its own, so no filter decision beyond `Keep` applies —
+    /// confirms the filter doesn't disturb a payload shape already covered
+    /// by other tests.
+    #[test]
+    fn real_captured_fragment_is_unaffected_by_the_node_filter() {
+        let json = serde_json::json!([{
+            "properties": [
+                { "id": 0, "attribute": { "flags": 1, "readableType": "_ConditionalContent<_ViewList_View, TabItemGroup.HostView>" } }
+            ],
+            "children": [
+                {
+                    "properties": [
+                        { "attribute": { "type": "SwiftUI.NavigationSearchAdjustmentModifier", "readableType": "NavigationSearchAdjustmentModifier", "flags": 2 } }
+                    ],
+                    "children": []
+                }
+            ]
+        }]);
+        let nodes = decode_json_nodes(&json).expect("should decode");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].children.len(), 1);
     }
 }
