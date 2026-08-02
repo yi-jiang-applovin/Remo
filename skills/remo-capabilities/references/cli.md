@@ -151,6 +151,19 @@ capability's own dots become real object nesting, so `grid.tab.select` is called
 currently-registered names, not guesses. This is the same underlying mechanism `remo call` uses
 (`Remo.invoke`), just reachable without installing anything.
 
+**Browsing vs. inspecting one capability**: expanding a parent object (e.g. clicking into `remo`
+or `remo.grid`) shows each child truncated to just `name()` — enough to see what exists, not what
+it does. To see a capability's full annotation (`function ping() { [remo capability: ping] }`,
+its complete dotted name), evaluate it directly instead of browsing to it:
+
+```js
+remo.ping          // prints the full annotation inline, not just "ƒ ping()"
+remo.grid.tab.select
+```
+
+Hovering a truncated `ƒ name()` in a parent listing also shows the same full text as a tooltip,
+without needing to re-evaluate it.
+
 ## Troubleshooting
 
 | Symptom | What to do |
