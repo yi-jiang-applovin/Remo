@@ -7,13 +7,15 @@ description: Use when mapping an iOS app's screens, routing, and state into Remo
 
 Use this skill to decide what the app should expose to Remo and to keep the capability inventory in sync with the code.
 
-Read `references/cli.md` before using the CLI commands in this workflow or when you need exact flag syntax for discovery, screenshots, tree inspection, capability listing, or capability invocation.
+Read `references/cli.md` before using the CLI (or DevTools' Console — see that file's "Calling
+capabilities from the real Console panel" section) in this workflow, or when you need exact flag
+syntax for discovery, screenshots, capability listing, or capability invocation.
 
 ## Workflow
 
 1. Read the project's architecture and feature docs.
 2. Identify feature domains, screen entry points, and routing patterns.
-3. Observe the running app with screenshots, view trees, and current capability listings.
+3. Observe the running app with screenshots, the Elements panel's view hierarchy, and current capability listings.
 4. Design the capability map.
 5. Implement the highest-value capabilities first.
 6. Document registered capabilities and TODOs in `.remo/capabilities.md`.

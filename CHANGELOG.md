@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Generic storage-debugging built-ins**: `userDefaults.list`/`.get`/`.set`/`.delete` (real
+  `NSUserDefaults` access), `filesystem.list`/`.read`/`.delete` (sandbox file browsing), and
+  `sqlite.query` (arbitrary SQL against any `.sqlite`/`.db` file) — universal to any iOS app, not
+  something a project has to register itself. Reachable via `Remo.invoke` (CLI/MCP) or the
+  Console panel's `remo.userDefaults.set({...})`-style direct calls. See `SPEC.md` §13.5.
+- **`Remo.invoke` reachable from real Chrome DevTools' Console panel.** No CLI or MCP server
+  needed: type `remo` in the Console to see every registered capability (grouped by namespace,
+  self-describing), and call one directly with `remo.<dotted.name>({...})` — a capability's own
+  dots (`grid.tab.select`, already Remo's naming convention) become real object nesting, not a
+  separate `invoke(name, args)` indirection. Real, schema-driven Tab-completion works too
+  (`remo.` suggests actual registered names). A call attempted while DevTools is only rendering
+  a live preview (before Enter is pressed) is refused, matching how a real JS engine refuses
+  anything with a possible side effect in that situation — a capability like "delete this key"
+  can't fire mid-keystroke.
+
+### Removed
+
+- **The `__view_tree`/`__screenshot` built-in capabilities, `remo tree`, and `remo-mcp`'s
+  `get_view_tree` tool.** Both capabilities duplicated what real CDP already does better:
+  `DOM.getDocument` backs the actual, live, inspectable Elements panel, and
+  `Page.captureScreenshot` is what `remo screenshot`/`remo-mcp` already called directly. Use
+  `chrome://inspect`/a `devtools://` URL for the view hierarchy instead of `remo tree`.
+
+### Changed
+
+- **Rewritten onto real Chrome DevTools Protocol.** `remo-sdk`'s embedded server now speaks CDP
+  (HTTP discovery + WebSocket, `Page`/`DOM`/`CSS`/`Overlay` domains, plus a custom `Remo.*`
+  domain for `Remo.invoke`/`Remo.listCapabilities`) instead of a bespoke length-prefixed RPC
+  protocol. `chrome://inspect`, `remo` (rewritten as a thin CDP client), the new `remo-mcp`
+  agent-facing companion server, or any other CDP client can all drive/inspect the app directly.
+  See `SPEC.md` §13 for the full rationale, the Track A/B compatibility split, and documented
+  non-goals.
+- **`remo` CLI commands**: `list` renamed to `capabilities`; `screenshot` now calls the standard
+  `Page.captureScreenshot` method directly. `remo call`'s printed result is no longer wrapped in
+  a `.data` envelope.
+
+### Removed
+
+- **`remo-desktop`** (device manager, RPC client, web dashboard, fMP4 muxer) and **`remo-daemon`**
+  (connection pooling, HTTP/WebSocket API, event bus) — `chrome://inspect`'s own
+  screencast/screenshot panels and a daemon-free, direct-dial CLI made both unnecessary.
+- **`remo mirror`/`dashboard`/`start`/`stop`/`status`/`watch`** CLI commands, along with the
+  crates above. The high-fidelity H.264 mirror is planned to return as a `Remo.startMirror`
+  CDP extension (tracked separately, not abandoned); `Remo.capabilitiesChanged` (which `watch`
+  relied on) isn't wired up on the CDP path yet.
+
 ## [0.4.4] - 2026-04-19
 
 ### Added

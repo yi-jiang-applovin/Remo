@@ -36,10 +36,23 @@ Whenever the CLI changes, update all of the following as needed:
 1. Command list and examples for any newly added, removed, or renamed command
 2. Option names, defaults, and flag spellings
 3. Connection semantics for `--addr` and `--device`
-4. Output behavior for `screenshot`, `tree`, `watch`, and `mirror`
-5. Daemon-related behavior for `dashboard`, `start`, `stop`, and `status`
-6. Known caveats, especially user-visible ones such as `mirror --save` timing limitations
+4. Output behavior for `screenshot`, `info`, and `call` (note whether the result is wrapped)
+5. The "What moved" section listing anything dropped in the CDP rewrite (dashboard, mirror,
+   daemon, watch) and where its replacement lives or is tracked
+6. Known caveats and tracked gaps — e.g. `Remo.capabilitiesChanged` not being wired up yet, or
+   the H.264 mirror not having landed as `Remo.startMirror`
 
-## Current Known Caveat Worth Preserving
+## Current Known Gaps Worth Preserving
 
-`remo mirror --save` currently writes fixed per-frame sample durations in the MP4 muxer, which compresses idle periods and can make the saved video shorter than wall-clock time. Keep this caveat documented in the distributed CLI reference and any skill that recommends `mirror --save`.
+`remo` was rewritten (see the repo's CDP rewrite plan) to speak real Chrome DevTools Protocol
+instead of a custom length-prefixed RPC — `remo-desktop` (dashboard, web mirror player) and
+`remo-daemon` (connection pooling) were deleted as part of that, since `chrome://inspect`'s own
+screencast/screenshot panels made them unnecessary. Two things from the old CLI have no CDP
+equivalent yet and are tracked as follow-up work, not silently dropped:
+
+- **`remo watch`** (capability-change event stream) — `Remo.capabilitiesChanged` isn't wired up
+  server-side yet.
+- **`remo mirror --save`** (H.264 recording) — planned to return as a `Remo.startMirror`/
+  `Remo.stopMirror` CDP extension; until then there's no recording command at all. When it does
+  land, keep documenting its old caveat: fixed per-frame sample durations in the MP4 muxer
+  compress idle periods, so saved videos can be shorter than wall-clock time.

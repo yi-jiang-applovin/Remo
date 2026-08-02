@@ -1,4 +1,17 @@
 //! Streaming infrastructure: StreamSender for pushing frames, MirrorSession lifecycle.
+//!
+//! Not currently wired into `server.rs` — the legacy length-prefixed
+//! connection handler that called `run_mirror_loop` was removed in the CDP
+//! rewrite's Phase 3 cutover. Per the rewrite plan's "Screencast, dual path"
+//! section, this high-fidelity H.264 path is meant to survive as a
+//! `Remo.startMirror`/`Remo.stopMirror` CDP extension (Track A) — pushing
+//! `StreamFrame`s as CDP events through a connection's `EventSink` instead of
+//! through `remo_transport::WriteHalf` — rather than being dropped outright
+//! (dropping it would be a real fidelity regression versus
+//! `Page.startScreencast`'s baseline JPEG screencast). That porting work is
+//! tracked separately and hasn't landed yet; this module is kept, unchanged
+//! and reachable via `remo_sdk::{MirrorSession, StreamSender, run_mirror_loop}`,
+//! as its basis.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;

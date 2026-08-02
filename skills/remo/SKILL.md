@@ -7,7 +7,7 @@ description: Use when Remo is already integrated and you need day-to-day iOS ver
 
 Use this skill for the normal development loop after setup is complete.
 
-Read `references/cli.md` before running commands, when you need exact CLI syntax, or when you are considering `remo mirror --save` and need to account for its current timing caveat.
+Read `references/cli.md` before running commands, when you need exact CLI syntax, or when you need to know what moved in the CDP rewrite (no more `mirror`/`dashboard`/`start`/`stop`/`status`/`watch`).
 
 ## Core Loop
 
@@ -16,7 +16,7 @@ Follow this loop for each task:
 1. Connect to the running app.
 2. Capture a baseline.
 3. Make a code change.
-4. Rebuild and checkpoint with screenshots, view trees, or capability calls.
+4. Rebuild and checkpoint with screenshots, the Elements panel's view hierarchy, or capability calls.
 5. Record pass or fail evidence in a verification report.
 6. Repeat until the task is verified.
 
@@ -56,7 +56,8 @@ Before making changes, capture the current screen and any supporting state that 
 Typical baseline evidence:
 
 - screenshot
-- view tree
+- the Elements panel's view hierarchy (`chrome://inspect`/a `devtools://` URL — there's no
+  `remo tree` command; this is real CDP `DOM.getDocument`)
 - capability output for relevant internal state
 
 Add a short observation describing what is wrong or what you expect to change.
@@ -66,7 +67,7 @@ Add a short observation describing what is wrong or what you expect to change.
 After each meaningful build:
 
 1. capture a screenshot
-2. capture the view tree if layout or navigation changed
+2. check the Elements panel's view hierarchy if layout or navigation changed
 3. call relevant verification capabilities if internal state matters
 4. compare the result against your expectation
 5. mark the step as pass or fail
@@ -130,9 +131,11 @@ The report should let another reviewer understand exactly what changed and what 
 Choose the lightest mode that proves the behavior:
 
 - screenshot for visual checks
-- tree for structure and hierarchy
+- the Elements panel for structure and hierarchy
 - capability call for hidden state
 - multi-screen navigation checks for regression coverage
-- mirror only when a moving interaction matters
 
-If you use `remo mirror --save`, check `references/cli.md` first. The saved video currently compresses idle periods and is not a wall-clock-accurate recording format.
+There is no `remo mirror` anymore — the high-fidelity recording path hasn't been ported to CDP
+yet (see `references/cli.md`'s "What moved"). For a moving interaction, fall back to
+`xcrun simctl io ... recordVideo`, or Chrome's own `Page.startScreencast`-backed screencast panel
+in `chrome://inspect`.

@@ -66,7 +66,7 @@ jobs:
             -only-testing:RemoExampleFeatureTests \
             test
       - name: Run E2E tests
-        run: ./scripts/e2e-test.sh --screenshots --record
+        run: ./scripts/e2e-test.sh --screenshots
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7

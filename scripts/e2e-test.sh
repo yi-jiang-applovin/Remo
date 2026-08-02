@@ -10,27 +10,31 @@ set -euo pipefail
 # Usage:
 #   ./scripts/e2e-test.sh                     # full run
 #   SKIP_BUILD=1 ./scripts/e2e-test.sh        # skip build phase
-#   ./scripts/e2e-test.sh --record            # save mirror recording
 #   ./scripts/e2e-test.sh --screenshots       # save screenshots
 #
 # Environment variables:
 #   DEVICE_UUID    — simulator UDID (default: first booted device)
 #   SKIP_BUILD     — set to 1 to skip build phase
-#   ARTIFACTS_DIR  — where to save screenshots/recordings (default: /tmp/remo-e2e)
+#   ARTIFACTS_DIR  — where to save screenshots (default: /tmp/remo-e2e)
 #   DERIVED_DATA_PATH — explicit Xcode DerivedData path for RemoExample builds
 #   REMO_BIN       — path to remo binary (default: built from source)
 #   REMO_USE_REMOTE — set to 1 to build the example app against published remo-spm
+#
+# Note: `remo` now speaks real CDP (see the CDP rewrite plan) and no longer
+# has a `mirror`/`stop`/`status` command — the old --record (H.264 mirror
+# recording) option is gone with it. The high-fidelity mirror is planned to
+# come back as a `Remo.startMirror` CDP extension (see
+# crates/remo-sdk/src/streaming.rs's module doc); until that lands, this
+# script has no recording capability at all.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Options
-OPT_RECORD=false
 OPT_SCREENSHOTS=false
 for arg in "$@"; do
     case "$arg" in
-        --record)      OPT_RECORD=true ;;
         --screenshots) OPT_SCREENSHOTS=true ;;
         --help|-h)
             sed -n '3,/^# ====/p' "$0" | head -n -1 | sed 's/^# \?//'
@@ -55,17 +59,11 @@ PASS_COUNT=0
 FAIL_COUNT=0
 
 # Cleanup tracking
-MIRROR_PID=""
 APP_LAUNCHED=false
 
 cleanup() {
     echo ""
     echo -e "${CYAN}--- Cleanup ---${RESET}"
-    if [ -n "$MIRROR_PID" ] && kill -0 "$MIRROR_PID" 2>/dev/null; then
-        echo "Stopping mirror recording (pid=$MIRROR_PID)..."
-        kill "$MIRROR_PID" 2>/dev/null || true
-        wait "$MIRROR_PID" 2>/dev/null || true
-    fi
     if [ "$APP_LAUNCHED" = true ] && [ -n "${DEVICE_UUID:-}" ]; then
         echo "Terminating app..."
         xcrun simctl terminate "$DEVICE_UUID" com.remo.example 2>/dev/null || true
@@ -105,7 +103,11 @@ remo_call() {
 }
 
 # Assert that a jq expression against the remo call result evaluates to true.
-# Usage: assert_call "test name" "capability" '{"param":1}' '.data.status == "ok"'
+# Usage: assert_call "test name" "capability" '{"param":1}' '.status == "ok"'
+#
+# The jq path is against the capability's own JSON result directly — `remo
+# call` (CDP's `Remo.invoke`) no longer wraps it in a `.data` envelope the
+# way the old length-prefixed RPC's `Response` did.
 assert_call() {
     local name="$1"
     local capability="$2"
@@ -121,7 +123,7 @@ assert_call() {
     if echo "$result" | jq -e "$jq_expr" >/dev/null 2>&1; then
         pass "$name"
     else
-        fail "$name — expected $jq_expr, got: $(echo "$result" | jq -c '.data // .error // .')"
+        fail "$name — expected $jq_expr, got: $(echo "$result" | jq -c '.' 2>/dev/null || echo "$result")"
     fi
 }
 
@@ -260,10 +262,6 @@ done
 xcrun simctl uninstall "$DEVICE_UUID" com.remo.example 2>/dev/null || true
 sleep 1
 
-# Stop any running daemon (we want direct TCP connections)
-"$REMO_BIN" stop 2>/dev/null || true
-sleep 0.5
-
 echo "  Installing $APP_PATH..."
 xcrun simctl install "$DEVICE_UUID" "$APP_PATH"
 
@@ -293,7 +291,7 @@ if [ -n "$APP_PID" ]; then
         if [ -n "$PORT" ]; then
             ADDR="127.0.0.1:$PORT"
             # Verify with ping
-            if remo_call __ping '{}' 2>/dev/null | jq -e '.data.pong == true' >/dev/null 2>&1; then
+            if remo_call __ping '{}' 2>/dev/null | jq -e '.pong == true' >/dev/null 2>&1; then
                 echo "  Found device at $ADDR (via lsof)"
                 break
             else
@@ -304,6 +302,8 @@ if [ -n "$APP_PID" ]; then
 fi
 
 # Strategy 2: Fall back to Bonjour discovery if lsof didn't work.
+# `remo devices`' Bonjour section prints one line per service like:
+#   "  RemoExample._remo._tcp -> ws://127.0.0.1:9930/devtools/page/1 (dial with --addr 127.0.0.1:9930)"
 if [ -z "$ADDR" ]; then
     echo "  Falling back to Bonjour discovery..."
     for attempt in 1 2 3 4 5; do
@@ -311,13 +311,12 @@ if [ -z "$ADDR" ]; then
         sleep 3
         DEVICES_OUTPUT=$("$REMO_BIN" devices 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)
         ADDR=$(echo "$DEVICES_OUTPUT" \
-            | grep -E '^Bonjour ' \
-            | awk '{print $NF}' \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$' \
+            | grep -oE -- '-> ws://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+/' \
+            | sed -E 's#-> ws://([^/]+)/#\1#' \
             | head -1 || true)
 
         if [ -n "$ADDR" ]; then
-            if remo_call __ping '{}' 2>/dev/null | jq -e '.data.pong == true' >/dev/null 2>&1; then
+            if remo_call __ping '{}' 2>/dev/null | jq -e '.pong == true' >/dev/null 2>&1; then
                 echo "  Found device at $ADDR (via Bonjour)"
                 break
             else
@@ -343,14 +342,6 @@ fi
 rm -rf "$ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
 
-if [ "$OPT_RECORD" = true ]; then
-    log "Starting mirror recording..."
-    remo mirror -a "$ADDR" --save "$ARTIFACTS_DIR/recording.mp4" --fps 30 &
-    MIRROR_PID=$!
-    sleep 2
-    echo "  Recording to $ARTIFACTS_DIR/recording.mp4 (pid=$MIRROR_PID)"
-fi
-
 # ---------------------------------------------------------------------------
 # Phase 4: Exercise & Assert
 # ---------------------------------------------------------------------------
@@ -360,75 +351,75 @@ log "Phase 4: Exercise Capabilities"
 # -- Connectivity --
 echo ""
 echo -e "${BOLD}[Connectivity]${RESET}"
-assert_call "ping" "__ping" '{}' '.data.pong == true'
-assert_call "device_info" "__device_info" '{}' '.data.system_name == "iOS"'
-assert_call "app_info" "__app_info" '{}' '.data.bundle_id == "com.remo.example"'
+assert_call "ping" "__ping" '{}' '.pong == true'
+assert_call "device_info" "__device_info" '{}' '.system_name == "iOS"'
+assert_call "app_info" "__app_info" '{}' '.bundle_id == "com.remo.example"'
 
 maybe_screenshot "01-home-initial"
 
 # -- UI Effects --
 echo ""
 echo -e "${BOLD}[UI Effects]${RESET}"
-assert_call "ui.toast" "ui.toast" '{"message":"E2E test toast"}' '.data.status == "ok"'
+assert_call "ui.toast" "ui.toast" '{"message":"E2E test toast"}' '.status == "ok"'
 sleep 1
 maybe_screenshot "02-toast"
 sleep 2  # wait for toast to dismiss (auto-hides after 3s)
 
-assert_call "ui.confetti" "ui.confetti" '{}' '.data.status == "ok"'
+assert_call "ui.confetti" "ui.confetti" '{}' '.status == "ok"'
 sleep 0.5
 maybe_screenshot "03-confetti"
 
-assert_call "ui.setAccentColor" "ui.setAccentColor" '{"color":"purple"}' '.data.color == "purple"'
+assert_call "ui.setAccentColor" "ui.setAccentColor" '{"color":"purple"}' '.color == "purple"'
 sleep 0.3
 maybe_screenshot "04-accent-purple"
 
 # -- Navigation --
 echo ""
 echo -e "${BOLD}[Navigation]${RESET}"
-assert_call "navigate" "navigate" '{"route":"uikit"}' '.data.status == "ok"'
+assert_call "navigate" "navigate" '{"route":"uikit"}' '.status == "ok"'
 sleep 1
 maybe_screenshot "05-uikit-grid"
 
 # -- Grid: tab select --
 echo ""
 echo -e "${BOLD}[Grid]${RESET}"
-assert_call "grid.tab.select (by id)" "grid.tab.select" '{"id":"feed"}' '.data.status == "ok" and .data.selectedTab.id == "feed"'
+assert_call "grid.tab.select (by id)" "grid.tab.select" '{"id":"feed"}' '.status == "ok" and .selectedTab.id == "feed"'
 sleep 0.3
-assert_call "grid.tab.select (by index)" "grid.tab.select" '{"index":1}' '.data.status == "ok" and .data.selectedTab.id == "items"'
+assert_call "grid.tab.select (by index)" "grid.tab.select" '{"index":1}' '.status == "ok" and .selectedTab.id == "items"'
 sleep 0.3
 remo_call "grid.tab.select" '{"index":0}' >/dev/null; sleep 0.3
 
-assert_call "grid.feed.append" "grid.feed.append" '{"title":"E2E Card","subtitle":"automated"}' '.data.status == "ok" and .data.tab == "feed"'
+assert_call "grid.feed.append" "grid.feed.append" '{"title":"E2E Card","subtitle":"automated"}' '.status == "ok" and .tab == "feed"'
 sleep 0.3
 maybe_screenshot "06-feed-appended"
 
 # Scroll tests on items tab — 20 items guarantees visible scroll range
 remo_call "grid.tab.select" '{"id":"items"}' >/dev/null; sleep 0.3
-assert_call "grid.scroll.vertical (bottom)" "grid.scroll.vertical" '{"position":"bottom"}' '.data.status == "ok" and .data.position == "bottom" and .data.tab == "items"'
+assert_call "grid.scroll.vertical (bottom)" "grid.scroll.vertical" '{"position":"bottom"}' '.status == "ok" and .position == "bottom" and .tab == "items"'
 sleep 0.5
 maybe_screenshot "07-scrolled-bottom"
 
-assert_call "grid.scroll.vertical (top)" "grid.scroll.vertical" '{"position":"top"}' '.data.status == "ok" and .data.position == "top" and .data.tab == "items"'
+assert_call "grid.scroll.vertical (top)" "grid.scroll.vertical" '{"position":"top"}' '.status == "ok" and .position == "top" and .tab == "items"'
 sleep 0.3
 remo_call "grid.tab.select" '{"id":"feed"}' >/dev/null; sleep 0.3
 
-assert_call "grid.feed.reset" "grid.feed.reset" '{}' '.data.status == "ok" and .data.tab == "feed"'
+assert_call "grid.feed.reset" "grid.feed.reset" '{}' '.status == "ok" and .tab == "feed"'
 sleep 0.3
 maybe_screenshot "08-feed-reset"
 
-assert_call "grid.scroll.horizontal (next)" "grid.scroll.horizontal" '{"direction":"next"}' '.data.status == "ok" and .data.selectedTab.id == "items"'
+assert_call "grid.scroll.horizontal (next)" "grid.scroll.horizontal" '{"direction":"next"}' '.status == "ok" and .selectedTab.id == "items"'
 sleep 0.3
-assert_call "grid.scroll.horizontal (previous)" "grid.scroll.horizontal" '{"direction":"previous"}' '.data.status == "ok" and .data.selectedTab.id == "feed"'
+assert_call "grid.scroll.horizontal (previous)" "grid.scroll.horizontal" '{"direction":"previous"}' '.status == "ok" and .selectedTab.id == "feed"'
 sleep 0.3
 
-assert_call "grid.visible" "grid.visible" '{}' '.data.status == "ok" and .data.tab == "feed"'
+assert_call "grid.visible" "grid.visible" '{}' '.status == "ok" and .tab == "feed"'
 sleep 0.3
 maybe_screenshot "09-visible"
 
 # -- Capability cleanup --
 echo ""
 echo -e "${BOLD}[Capabilities]${RESET}"
-CAPABILITIES_OUTPUT=$(remo list -a "$ADDR" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)
+CAPABILITIES_OUTPUT=$(remo capabilities -a "$ADDR" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)
 if echo "$CAPABILITIES_OUTPUT" | grep -Eq 'items\.(add|remove|clear)'; then
     fail "legacy items.* capabilities are not exposed"
 else
@@ -438,9 +429,9 @@ fi
 # -- State round-trip --
 echo ""
 echo -e "${BOLD}[State]${RESET}"
-assert_call "state.set" "state.set" '{"key":"username","value":"E2E User"}' '.data.status == "ok"'
+assert_call "state.set" "state.set" '{"key":"username","value":"E2E User"}' '.status == "ok"'
 sleep 0.3
-assert_call "state.get" "state.get" '{"key":"username"}' '.data.value == "E2E User"'
+assert_call "state.get" "state.get" '{"key":"username"}' '.value == "E2E User"'
 
 # -- Remaining tabs (screenshots only, navigate already tested) --
 remo_call "navigate" '{"route":"activity"}' >/dev/null; sleep 0.5
@@ -459,24 +450,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 5: Stop Recording
-# ---------------------------------------------------------------------------
-
-if [ "$OPT_RECORD" = true ] && [ -n "$MIRROR_PID" ]; then
-    log "Stopping mirror recording..."
-    kill "$MIRROR_PID" 2>/dev/null || true
-    wait "$MIRROR_PID" 2>/dev/null || true
-    MIRROR_PID=""
-    sleep 1
-    if [ -f "$ARTIFACTS_DIR/recording.mp4" ] && [ -s "$ARTIFACTS_DIR/recording.mp4" ]; then
-        RECORDING_SIZE=$(ls -lh "$ARTIFACTS_DIR/recording.mp4" | awk '{print $5}')
-        pass "mirror recording saved ($RECORDING_SIZE)"
-    else
-        fail "mirror recording — file missing or empty"
-    fi
-fi
-
-# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
@@ -492,7 +465,7 @@ else
 fi
 echo "==========================================="
 
-if [ "$OPT_SCREENSHOTS" = true ] || [ "$OPT_RECORD" = true ]; then
+if [ "$OPT_SCREENSHOTS" = true ]; then
     echo -e " Artifacts: $ARTIFACTS_DIR"
     ls -1 "$ARTIFACTS_DIR" 2>/dev/null | sed 's/^/   /'
 fi

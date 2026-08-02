@@ -7,10 +7,10 @@ members = [
     "crates/remo-usbmuxd",
     "crates/remo-sdk",
     "crates/remo-objc",
-    "crates/remo-desktop",
     "crates/remo-cli",
     "crates/remo-bonjour",
-    "crates/remo-daemon",
+    "crates/remo-cdp",
+    "crates/remo-mcp",
 ]
 
 [workspace.lints.clippy]
@@ -84,9 +84,36 @@ base64 = "0.22"
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["util"] }
 http = "1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# A raw WebSocket client: used as a dev-dependency at the workspace root to
+# prove the real dual-stack `RemoServer` against actual CDP framing
+# (independent of remo-cdp's own server-side codec), and as a real
+# (non-dev) dependency of `remo-mcp`, which dials `Remo`-speaking CDP
+# servers as an actual client.
+tokio-tungstenite = "0.28"
 
-# Open URLs in browser
-open = "5"
+# Async trait objects (dyn-safe async fns in traits)
+async-trait = "0.1"
+
+# CDP: typed structs generated from Chrome's own protocol.json/PDL, for the
+# standard domains (Page/DOM/CSS/Overlay) remo-cdp reuses.
+chromiumoxide_cdp = "0.9"
+chromiumoxide_types = "0.9"
+
+# MCP: the official Rust SDK, used by `remo-mcp` (the agent-facing companion
+# server) to expose `Remo.*` CDP calls as MCP tools. `schemars` derives the
+# tools' JSON input schemas.
+rmcp = "3"
+schemars = "1"
+
+# SQLite: generic `sqlite.query` capability (remo-sdk), any .sqlite/.db file
+# in the app's own sandbox, not tied to any specific ORM (GRDB, Core Data's
+# own store, a hand-rolled schema). "bundled" compiles SQLite from source
+# instead of linking whatever system libsqlite3 a target provides — slower
+# to build, but the one choice that's reliably available when cross-compiling
+# for iOS, not just this dev machine.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [package]
 name = "remo-workspace"
@@ -99,10 +126,11 @@ publish = false
 remo-protocol = { path = "crates/remo-protocol" }
 remo-transport = { path = "crates/remo-transport" }
 remo-sdk = { path = "crates/remo-sdk" }
-remo-desktop = { path = "crates/remo-desktop" }
-remo-daemon = { path = "crates/remo-daemon" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
-axum = { workspace = true }
-tower = { workspace = true }
-http = { workspace = true }
+
+[dev-dependencies.tokio-tungstenite]
+workspace = true
+
+[dev-dependencies.futures]
+workspace = true
