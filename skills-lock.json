@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "xc-dev": {
+      "source": "yjmeqt/xc-dev",
+      "sourceType": "github",
+      "skillPath": "skills/xc-dev/SKILL.md",
+      "computedHash": "6cf354e358f712655eaf8c4c25e7af509ea30fe911ac82aff0e226ff9c2e7c0b"
+    }
+  }
+}
