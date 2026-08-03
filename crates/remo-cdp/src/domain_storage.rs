@@ -224,6 +224,30 @@ impl StorageDomain {
         CdpReply::empty()
     }
 
+    /// Same lookup as [`Self::get_storage_key_for_frame`], answering both
+    /// `Storage.getStorageKeyForFrame` (the documented CDP method name) and
+    /// `Storage.getStorageKey` (what a real Chrome 150 DevTools frontend
+    /// actually sends — confirmed live via a raw-traffic capture against
+    /// this exact server: `{"method":"Storage.getStorageKey","params":
+    /// {"frameId":"userdefaults://standard"}}`).
+    ///
+    /// This was the real root cause of the Application panel's Local
+    /// Storage sidebar showing "No local storage detected" despite
+    /// `Page.getResourceTree` already listing the frame and raw
+    /// `DOMStorage.getDOMStorageItems` calls already returning real data:
+    /// only `Storage.getStorageKeyForFrame` was claimed here, so the
+    /// frontend's actual `Storage.getStorageKey` call fell through to the
+    /// transport's generic `{}` ack (see `transport.rs`'s `None` arm) —
+    /// `frame.getStorageKey()` in `devtools-frontend`'s `ResourceTreeModel`
+    /// then resolved to `undefined` (no `storageKey` field in the reply),
+    /// so `StorageKeyManager` never learned this frame's key and
+    /// `DOMStorageModel` never created a `DOMStorage` entry for it — all
+    /// upstream of (and invisible to) any raw `DOMStorage.*` call, which is
+    /// exactly why scripting the wire protocol directly didn't catch this.
+    fn get_storage_key(request: &CdpRequest) -> CdpReply {
+        Self::get_storage_key_for_frame(request)
+    }
+
     fn get_storage_key_for_frame(request: &CdpRequest) -> CdpReply {
         // Frame ids: "1" is the main document (`domain_dom::MAIN_ORIGIN`),
         // anything else is an origin string handed out verbatim as the
@@ -248,6 +272,7 @@ impl CdpDomain for StorageDomain {
             "DOMStorage.removeDOMStorageItem",
             "DOMStorage.clear",
             "Storage.getStorageKeyForFrame",
+            "Storage.getStorageKey",
             "Storage.setStorageBucketTracking",
             "Storage.clearDataForOrigin",
             "Storage.clearDataForStorageKey",
@@ -262,6 +287,7 @@ impl CdpDomain for StorageDomain {
             "DOMStorage.removeDOMStorageItem" => Self::remove_dom_storage_item(request, events),
             "DOMStorage.clear" => Self::clear(request, events),
             "Storage.getStorageKeyForFrame" => Self::get_storage_key_for_frame(request),
+            "Storage.getStorageKey" => Self::get_storage_key(request),
             // Acked, deliberately without a `Storage.storageBucketCreatedOrUpdated`
             // event — see this module's doc comment on the IndexedDB/CacheStorage
             // non-goal.
@@ -632,10 +658,50 @@ mod tests {
                 "DOMStorage.removeDOMStorageItem",
                 "DOMStorage.clear",
                 "Storage.getStorageKeyForFrame",
+                "Storage.getStorageKey",
                 "Storage.setStorageBucketTracking",
                 "Storage.clearDataForOrigin",
                 "Storage.clearDataForStorageKey",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_storage_key_answers_the_same_as_get_storage_key_for_frame() {
+        // Regression test for the real root cause of the Application
+        // panel's Local Storage sidebar bug: a real Chrome 150 frontend
+        // sends `Storage.getStorageKey`, not `Storage.getStorageKeyForFrame`
+        // — confirmed via a raw-traffic capture against this exact server.
+        // Before this method was claimed here, it fell through to the
+        // transport's generic `{}` ack, which has no `storageKey` field, so
+        // `ResourceTreeFrame.getStorageKey()` resolved to nothing and the
+        // frame's storage key never reached `StorageKeyManager`.
+        let domain = StorageDomain::new();
+        let (events, _rx) = EventSink::new();
+
+        let main_reply = domain
+            .respond(
+                &request("Storage.getStorageKey", json!({ "frameId": "1" })),
+                &events,
+            )
+            .await;
+        assert_eq!(
+            assert_ok(main_reply)["storageKey"],
+            format!("{}/", crate::domain_dom::MAIN_ORIGIN)
+        );
+
+        let ud_reply = domain
+            .respond(
+                &request(
+                    "Storage.getStorageKey",
+                    json!({ "frameId": USERDEFAULTS_ORIGIN }),
+                ),
+                &events,
+            )
+            .await;
+        assert_eq!(
+            assert_ok(ud_reply)["storageKey"],
+            format!("{USERDEFAULTS_ORIGIN}/")
         );
     }
 }
