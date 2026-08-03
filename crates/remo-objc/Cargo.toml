@@ -10,18 +10,7 @@ workspace = true
 serde.workspace = true
 tracing.workspace = true
 base64.workspace = true
-# `unbounded_depth` is required for `Deserializer::disable_recursion_limit`,
-# used by `swiftui_debug.rs` (see its `serde_stacker` dependency below) —
-# real SwiftUI debug-data payloads nest past serde_json's default limit.
-serde_json = { workspace = true, features = ["unbounded_depth"] }
-# Real SwiftUI debug-data payloads (crates/remo-objc/src/swiftui_debug.rs)
-# nest well past serde_json's default 128-level recursion limit — confirmed
-# empirically against the demo app (iOS 26.2 simulator): a real hosting
-# view's JSON blew the default limit around 50-80KB into a ~300KB payload.
-# `serde_stacker` pairs `disable_recursion_limit()` with growing the actual
-# OS thread stack on demand, so deep-but-legitimate trees parse instead of
-# either erroring out or risking a real stack overflow.
-serde_stacker = "0.1"
+serde_json.workspace = true
 
 # objc2 ecosystem — only compiled on Apple targets.
 [target.'cfg(target_vendor = "apple")'.dependencies]
@@ -29,7 +18,6 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSObject", "NSString", "NSArray", "NSDictionary", "NSValue",
     "NSUserDefaults", "NSData", "NSNull", "NSObjCRuntime", "NSPathUtilities",
-    "NSProcessInfo",
 ] }
 objc2-ui-kit = { version = "0.3", features = ["UIView", "UIWindow", "UIApplication", "UIViewController", "UIResponder"], optional = true }
 security-framework = { version = "3", default-features = false }

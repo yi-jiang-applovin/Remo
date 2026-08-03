@@ -16,25 +16,6 @@ pub struct ViewNode {
     pub tag: isize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accessibility_id: Option<String>,
-    /// SwiftUI modifiers applied to this node (e.g. `_PaddingLayout`,
-    /// `_BackgroundModifier<Color>`), kept separate from `class_name` so the
-    /// Elements panel's tag name stays just the view's own type — see
-    /// `swiftui_debug.rs`, the only producer of a non-empty list here.
-    /// Empty (and not serialized at all) for every plain-UIKit node, which
-    /// is all of them outside that module.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub modifiers: Vec<String>,
-    /// Flattened `(title, value)` property rows — SwiftUI-only, like
-    /// `modifiers` above. Produced by `swiftui_debug.rs`'s bounded
-    /// `flatten_node_properties` (depth- and row-capped, with a trailing
-    /// truncation-note row when either limit is hit) from a node's full
-    /// decoded attribute tree, including nested `subattributes`. Consumed
-    /// by `domain_cdp`'s `domain_dom.rs`, which folds these into the
-    /// existing `CSS.getComputedStyleForNode` pseudo-CSS declarations
-    /// alongside `frame`, so Chrome's real Elements "Styles" pane shows
-    /// them for free.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub style_rows: Vec<(String, String)>,
     pub children: Vec<ViewNode>,
 }
 
@@ -94,20 +75,7 @@ mod apple {
             }
         };
 
-        let mut children: Vec<ViewNode> = subviews.iter().map(|sv| walk_view(&sv)).collect();
-
-        // Best-effort: if this is a SwiftUI hosting seam and the (opt-in,
-        // never-on-by-default) private recorder is active, splice the real
-        // SwiftUI subtree in as additional children — a plain UIKit view
-        // never has anything to add here, and any failure inside this call
-        // (missing selector, unparseable payload, disabled recorder) is a
-        // silent no-op that leaves `children` exactly as the plain UIKit
-        // walk already produced it. See `swiftui_debug.rs` module doc for
-        // why this is safe to call unconditionally on every hosting-view
-        // node rather than needing its own extra gating here.
-        if crate::swiftui_debug::is_hosting_view_class(&class_name) {
-            children.extend(crate::swiftui_debug::dump_hosting_view(view));
-        }
+        let children: Vec<ViewNode> = subviews.iter().map(|sv| walk_view(&sv)).collect();
 
         ViewNode {
             class_name,
@@ -121,8 +89,6 @@ mod apple {
             alpha: view.alpha() as f64,
             tag: view.tag(),
             accessibility_id,
-            modifiers: Vec::new(),
-            style_rows: Vec::new(),
             children,
         }
     }
@@ -151,8 +117,6 @@ mod apple {
             alpha: 1.0,
             tag: 0,
             accessibility_id: None,
-            modifiers: Vec::new(),
-            style_rows: Vec::new(),
             children: vec![],
         })
     }
